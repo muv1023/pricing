@@ -126,6 +126,18 @@ def money2(x):
     return f"${x:,.2f}"
 
 
+def money_md(x, decimals=0):
+    """Format currency safely inside Streamlit Markdown/alert text.
+
+    Streamlit treats an unescaped dollar sign as a LaTeX delimiter.
+    Escaping the dollar sign prevents currency values from being rendered
+    as math and breaking surrounding Markdown bold formatting.
+    """
+    if decimals == 2:
+        return f"\\${x:,.2f}"
+    return f"\\${x:,.0f}"
+
+
 def reset_lab():
     for key in list(st.session_state.keys()):
         if key.startswith("lab_") or key.startswith("price_") or key.startswith("shock_") or key.startswith("seg_"):
@@ -622,9 +634,9 @@ else:
         else:
             sat_opt_700 = optimize_day(sat["D"], sat["a"], sat["b"], 700.0, BASE_COST)
             st.info(
-                f"Optimized Saturday price with capacity 700: **{money2(sat_opt_700['price'])}** · "
+                f"Optimized Saturday price with capacity 700: **{money_md(sat_opt_700['price'], 2)}** · "
                 f"Tickets sold: **{sat_opt_700['served']:,.0f}** · "
-                f"Revenue: **{money(sat_opt_700['revenue'])}**"
+                f"Revenue: **{money_md(sat_opt_700['revenue'])}**"
             )
 
 # -----------------------------
@@ -695,9 +707,9 @@ else:
         else:
             tue_opt_1900 = optimize_day(1900.0, tue["a"], tue["b"], BASE_CAPACITY, BASE_COST)
             st.info(
-                f"Optimized Tuesday price after the demand increase: **{money2(tue_opt_1900['price'])}** · "
+                f"Optimized Tuesday price after the demand increase: **{money_md(tue_opt_1900['price'], 2)}** · "
                 f"Tickets sold: **{tue_opt_1900['served']:,.0f}** · "
-                f"Revenue: **{money(tue_opt_1900['revenue'])}**"
+                f"Revenue: **{money_md(tue_opt_1900['revenue'])}**"
             )
 
 # -----------------------------
@@ -831,11 +843,11 @@ else:
                         best_seg = {"pA": pa, "pB": pb, "revenue": rev}
 
             st.info(
-                f"Optimized common price: **{money2(best_common['price'])}** · "
-                f"Revenue: **{money(best_common['revenue'])}**  \n"
-                f"Optimized segmented prices: **A {money2(best_seg['pA'])}**, "
-                f"**B {money2(best_seg['pB'])}** · "
-                f"Revenue: **{money(best_seg['revenue'])}**"
+                f"Optimized common price: **{money_md(best_common['price'], 2)}** · "
+                f"Revenue: **{money_md(best_common['revenue'])}**  \n"
+                f"Optimized segmented prices: **A {money_md(best_seg['pA'], 2)}**, "
+                f"**B {money_md(best_seg['pB'], 2)}** · "
+                f"Revenue: **{money_md(best_seg['revenue'])}**"
             )
 
 # -----------------------------
