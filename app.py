@@ -158,7 +158,7 @@ def make_verification_code(student_id, generated_at):
 
 
 def build_pdf_report(student_name, student_id, course_section, generated_at, verification_code,
-                     manual_locked, opt_df, cap, dem, seg):
+                     manual_locked, opt_df, cap, dem, seg, predictions):
     """Build the student's pricing lab report entirely in memory."""
     buffer = io.BytesIO()
 
@@ -290,7 +290,11 @@ def build_pdf_report(student_name, student_id, course_section, generated_at, ver
         styles["Verify"],
     ))
 
-    story.append(Paragraph("Stage 1 - Student Weekly Pricing Strategy", styles["Section"]))
+    story.append(Paragraph("Stage 1 - Weekly Pricing Prediction and Strategy", styles["Section"]))
+    story.append(Paragraph(
+        f"Pre-analysis prediction - three days expected to support the highest prices: <b>{predictions['stage1_high_days']}</b>",
+        styles["BodySmall"],
+    ))
     manual_rows = [["Day", "Price", "Expected Demand", "Tickets Sold", "Capacity Used", "Revenue"]]
     for _, r in manual_locked.iterrows():
         manual_rows.append([
@@ -326,25 +330,47 @@ def build_pdf_report(student_name, student_id, course_section, generated_at, ver
     story.append(PageBreak())
     story.append(Paragraph("Stage 3 - Capacity Shock", styles["Section"]))
     cap_rows = [
-        ["Scenario", "Student Price", "Expected Demand", "Tickets Sold", "Revenue"],
-        ["Saturday capacity = 700", fmt_money(cap["student_price"]), fmt_num(cap["expected_demand"]),
-         fmt_num(cap["tickets_sold"]), fmt_money(cap["revenue"])],
+        ["Pre-analysis prediction", "Student Response"],
+        ["Expected direction of optimal price", predictions["stage3_direction"]],
+        ["Predicted optimal Saturday price", fmt_money(predictions["stage3_predicted_price"])],
     ]
-    story.append(styled_table(cap_rows, [1.75*inch, 1.05*inch, 1.15*inch, 1.0*inch, 1.05*inch]))
+    story.append(styled_table(cap_rows, [2.8*inch, 2.6*inch]))
+    story.append(Spacer(1, 5))
+    cap_result_rows = [
+        ["Scenario", "Student Price", "Expected Demand", "Tickets Sold", "Revenue", "Optimized Price"],
+        ["Saturday capacity = 700", fmt_money(cap["student_price"]), fmt_num(cap["expected_demand"]),
+         fmt_num(cap["tickets_sold"]), fmt_money(cap["revenue"]), fmt_money(cap["optimized_price"])],
+    ]
+    story.append(styled_table(cap_result_rows, [1.55*inch, 0.95*inch, 1.0*inch, 0.9*inch, 0.95*inch, 1.0*inch], font_size=7.5))
 
     story.append(Paragraph("Stage 4 - Demand Shock", styles["Section"]))
     dem_rows = [
-        ["Scenario", "Student Price", "Expected Demand", "Tickets Sold", "Revenue"],
-        ["Tuesday D = 1,900", fmt_money(dem["student_price"]), fmt_num(dem["expected_demand"]),
-         fmt_num(dem["tickets_sold"]), fmt_money(dem["revenue"])],
+        ["Pre-analysis prediction", "Student Response"],
+        ["Expected direction of optimal price", predictions["stage4_direction"]],
+        ["Predicted optimal Tuesday price", fmt_money(predictions["stage4_predicted_price"])],
     ]
-    story.append(styled_table(dem_rows, [1.75*inch, 1.05*inch, 1.15*inch, 1.0*inch, 1.05*inch]))
+    story.append(styled_table(dem_rows, [2.8*inch, 2.6*inch]))
+    story.append(Spacer(1, 5))
+    dem_result_rows = [
+        ["Scenario", "Student Price", "Expected Demand", "Tickets Sold", "Revenue", "Optimized Price"],
+        ["Tuesday D = 1,900", fmt_money(dem["student_price"]), fmt_num(dem["expected_demand"]),
+         fmt_num(dem["tickets_sold"]), fmt_money(dem["revenue"]), fmt_money(dem["optimized_price"])],
+    ]
+    story.append(styled_table(dem_result_rows, [1.55*inch, 0.95*inch, 1.0*inch, 0.9*inch, 0.95*inch, 1.0*inch], font_size=7.5))
 
     story.append(Paragraph("Stage 5 - Segmented Pricing", styles["Section"]))
+    seg_pred_rows = [
+        ["Pre-analysis prediction", "Student Response"],
+        ["More price-sensitive segment", predictions["stage5_sensitive_segment"]],
+        ["Expected price relationship", predictions["stage5_price_relationship"]],
+    ]
+    story.append(styled_table(seg_pred_rows, [2.8*inch, 2.6*inch]))
+    story.append(Spacer(1, 5))
     seg_rows = [
         ["Strategy", "Segment A Price", "Segment B Price", "Revenue"],
         ["One common price", fmt_money(seg["common_price"]), fmt_money(seg["common_price"]), fmt_money(seg["common_revenue"])],
         ["Student segmented prices", fmt_money(seg["segment_A_price"]), fmt_money(seg["segment_B_price"]), fmt_money(seg["segmented_revenue"])],
+        ["Optimized segmented prices", fmt_money(seg["optimized_A_price"]), fmt_money(seg["optimized_B_price"]), fmt_money(seg["optimized_revenue"])],
     ]
     story.append(styled_table(seg_rows, [2.0*inch, 1.35*inch, 1.35*inch, 1.35*inch]))
 
@@ -383,12 +409,23 @@ def build_pdf_report(student_name, student_id, course_section, generated_at, ver
 
 def initialize_state():
     defaults = {
+        "lab_stage1_prediction_locked": False,
+        "lab_stage1_prediction": None,
         "lab_stage1_locked": False,
         "lab_stage2_revealed": False,
+        "lab_stage3_prediction_locked": False,
+        "lab_stage3_direction": None,
+        "lab_stage3_predicted_price": None,
         "lab_stage3_locked": False,
         "lab_stage3_revealed": False,
+        "lab_stage4_prediction_locked": False,
+        "lab_stage4_direction": None,
+        "lab_stage4_predicted_price": None,
         "lab_stage4_locked": False,
         "lab_stage4_revealed": False,
+        "lab_stage5_prediction_locked": False,
+        "lab_stage5_sensitive_segment": None,
+        "lab_stage5_price_relationship": None,
         "lab_stage5_locked": False,
         "lab_stage5_revealed": False,
         "lab_manual_schedule": None,
@@ -437,12 +474,12 @@ with st.sidebar:
     st.markdown("### Lab sequence")
     st.markdown(
         """
-        1. Build a weekly pricing strategy  
-        2. Benchmark against optimization  
-        3. Respond to a capacity shock  
-        4. Respond to a demand shock  
-        5. Test segmented pricing  
-        6. Download your results
+        1. Predict weekly pricing pattern  
+        2. Build and benchmark prices  
+        3. Predict + test a capacity shock  
+        4. Predict + test a demand shock  
+        5. Predict + test segmented pricing  
+        6. Download verified results
         """
     )
     st.divider()
@@ -455,65 +492,93 @@ with st.sidebar:
 # Stage 1
 # -----------------------------
 
-st.header("Stage 1 · Build Your Weekly Pricing Strategy")
+st.header("Stage 1 · Predict, Then Build Your Weekly Pricing Strategy")
 st.write(
-    "The theme park can serve up to **1,000 customers per day**. "
-    "Use the sliders to set one ticket price for each day. "
-    "The dashboard updates immediately."
+    "The theme park can serve up to **1,000 customers per day**. Before touching a price slider, "
+    "use the daily logit demand parameters to predict which days should support the highest prices."
 )
 
-st.info(
-    "Do not try to guess the mathematically optimal prices yet. "
-    "Use the demand and capacity information to create a pricing schedule that you think would perform well."
-)
-
-price_cols = st.columns(4)
-manual_prices = {}
-for i, day in enumerate(DAYS):
-    with price_cols[i % 4]:
-        manual_prices[day] = st.slider(
-            day,
-            min_value=0.0,
-            max_value=50.0,
-            value=15.0,
-            step=0.5,
-            key=f"price_{day}",
-            disabled=st.session_state["lab_stage1_locked"],
-        )
-
-manual_df = evaluate_schedule(manual_prices)
-
-m1, m2, m3, m4 = st.columns(4)
-m1.metric("Weekly Revenue", money(manual_df["Revenue"].sum()))
-m2.metric("Weekly Attendance", f"{manual_df['Tickets Sold'].sum():,.0f}")
-m3.metric("Average Ticket Price", money2(manual_df["Price"].mean()))
-m4.metric("Days with Excess Demand", int((manual_df["Unserved Demand"] > 0).sum()))
-
-display_manual = manual_df[
-    ["Day", "Price", "Expected Demand", "Tickets Sold", "Capacity Utilization", "Revenue"]
-].copy()
-display_manual["Capacity Utilization"] = display_manual["Capacity Utilization"] * 100
 st.dataframe(
-    display_manual.style.format(
-        {
-            "Price": "${:,.2f}",
-            "Expected Demand": "{:,.0f}",
-            "Tickets Sold": "{:,.0f}",
-            "Capacity Utilization": "{:,.1f}%",
-            "Revenue": "${:,.0f}",
-        }
-    ),
+    BASELINE.rename(columns={"D": "Market Size (D)", "a": "a", "b": "b"}),
     use_container_width=True,
     hide_index=True,
 )
 
-if not st.session_state["lab_stage1_locked"]:
-    if st.button("Lock My Weekly Pricing Strategy", type="primary"):
-        st.session_state["lab_stage1_locked"] = True
-        st.session_state["lab_manual_schedule"] = manual_df.copy()
+if not st.session_state["lab_stage1_prediction_locked"]:
+    stage1_choice = st.radio(
+        "Which three days do you expect to support the highest optimized ticket prices?",
+        [
+            "Monday, Tuesday, Wednesday",
+            "Sunday, Friday, Saturday",
+            "Tuesday, Thursday, Saturday",
+            "Prices should be approximately equal across all days",
+        ],
+        index=None,
+        key="lab_stage1_choice_widget",
+    )
+    if st.button("Submit Weekly Pricing Prediction", type="primary", disabled=stage1_choice is None):
+        st.session_state["lab_stage1_prediction"] = stage1_choice
+        st.session_state["lab_stage1_prediction_locked"] = True
         st.rerun()
 else:
-    st.success("Your original weekly pricing strategy is locked.")
+    st.success(f"Prediction recorded: {st.session_state['lab_stage1_prediction']}")
+    st.caption("The lab will not grade this prediction yet. You will test it through your pricing decisions and the optimizer.")
+
+if st.session_state["lab_stage1_prediction_locked"]:
+    st.info(
+        "Now build your weekly pricing strategy. Use the demand parameters and the live dashboard, "
+        "but do not run an optimizer outside the lab before making your decisions."
+    )
+
+    price_cols = st.columns(4)
+    manual_prices = {}
+    for i, day in enumerate(DAYS):
+        with price_cols[i % 4]:
+            manual_prices[day] = st.slider(
+                day,
+                min_value=0.0,
+                max_value=50.0,
+                value=15.0,
+                step=0.5,
+                key=f"price_{day}",
+                disabled=st.session_state["lab_stage1_locked"],
+            )
+
+    manual_df = evaluate_schedule(manual_prices)
+
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("Weekly Revenue", money(manual_df["Revenue"].sum()))
+    m2.metric("Weekly Attendance", f"{manual_df['Tickets Sold'].sum():,.0f}")
+    m3.metric("Average Ticket Price", money2(manual_df["Price"].mean()))
+    m4.metric("Days with Excess Demand", int((manual_df["Unserved Demand"] > 0).sum()))
+
+    display_manual = manual_df[
+        ["Day", "Price", "Expected Demand", "Tickets Sold", "Capacity Utilization", "Revenue"]
+    ].copy()
+    display_manual["Capacity Utilization"] = display_manual["Capacity Utilization"] * 100
+    st.dataframe(
+        display_manual.style.format(
+            {
+                "Price": "${:,.2f}",
+                "Expected Demand": "{:,.0f}",
+                "Tickets Sold": "{:,.0f}",
+                "Capacity Utilization": "{:,.1f}%",
+                "Revenue": "${:,.0f}",
+            }
+        ),
+        use_container_width=True,
+        hide_index=True,
+    )
+
+    if not st.session_state["lab_stage1_locked"]:
+        if st.button("Lock My Weekly Pricing Strategy", type="primary"):
+            st.session_state["lab_stage1_locked"] = True
+            st.session_state["lab_manual_schedule"] = manual_df.copy()
+            st.rerun()
+    else:
+        st.success("Your original weekly pricing strategy is locked.")
+else:
+    st.warning("Submit the prediction above to unlock the weekly pricing controls.")
 
 # -----------------------------
 # Stage 2
@@ -567,11 +632,20 @@ else:
         )
         st.bar_chart(compare.set_index("Day")[["Your Price", "Optimized Price"]])
 
+        top3 = ", ".join(opt_df.sort_values("Price", ascending=False).head(3)["Day"].tolist())
+        expected_stage1 = "Sunday, Friday, Saturday"
+        supported = st.session_state["lab_stage1_prediction"] == expected_stage1
+        st.info(
+            f"Your pre-analysis prediction: **{st.session_state['lab_stage1_prediction']}**  \n"
+            f"Three highest optimized-price days in this model: **{top3}**  \n"
+            f"Prediction supported by the model: **{'Yes' if supported else 'No'}**"
+        )
+
 # -----------------------------
 # Stage 3
 # -----------------------------
 
-st.header("Stage 3 · Capacity Shock")
+st.header("Stage 3 · Capacity Shock: Predict Before You Reprice")
 
 if not st.session_state["lab_stage2_revealed"]:
     st.warning("Complete Stage 2 first.")
@@ -585,65 +659,105 @@ else:
 
     sat = BASELINE[BASELINE["Day"] == "Saturday"].iloc[0]
     baseline_opt = optimize_day(sat["D"], sat["a"], sat["b"], BASE_CAPACITY, BASE_COST)
+    st.metric("Original Optimized Saturday Price", money2(baseline_opt["price"]))
 
-    c1, c2 = st.columns([1, 1.3])
-    with c1:
-        st.metric("Original Optimized Saturday Price", money2(baseline_opt["price"]))
-        shock_price = st.slider(
-            "Set your revised Saturday price",
-            0.0,
-            50.0,
-            float(baseline_opt["price"]),
-            0.5,
-            key="shock_sat_price",
-            disabled=st.session_state["lab_stage3_locked"],
+    if not st.session_state["lab_stage3_prediction_locked"]:
+        direction = st.radio(
+            "Before testing prices: what do you expect to happen to the optimal Saturday price?",
+            ["Increase", "Decrease", "Remain approximately unchanged"],
+            index=None,
+            key="lab_stage3_direction_widget",
         )
-        shock_demand = float(logit_demand(shock_price, sat["D"], sat["a"], sat["b"]))
-        shock_sold = min(shock_demand, 700.0)
-        shock_rev = shock_price * shock_sold
-
-        st.metric("Expected Demand", f"{shock_demand:,.0f}")
-        st.metric("Tickets Sold", f"{shock_sold:,.0f}")
-        st.metric("Saturday Revenue", money(shock_rev))
-
-    with c2:
-        cap_view = pd.DataFrame(
-            {
-                "Metric": ["Capacity", "Expected Demand", "Tickets Sold"],
-                "Customers": [700.0, shock_demand, shock_sold],
-            }
-        ).set_index("Metric")
-        st.bar_chart(cap_view)
-
-    if not st.session_state["lab_stage3_locked"]:
-        if st.button("Lock My Saturday Repricing", type="primary"):
-            st.session_state["lab_stage3_locked"] = True
-            st.session_state["lab_capacity_shock"] = {
-                "student_price": shock_price,
-                "expected_demand": shock_demand,
-                "tickets_sold": shock_sold,
-                "revenue": shock_rev,
-            }
+        predicted_price = st.number_input(
+            "Enter your predicted new optimal Saturday price",
+            min_value=0.0,
+            max_value=50.0,
+            value=None,
+            step=0.50,
+            key="lab_stage3_pred_price_widget",
+        )
+        if st.button(
+            "Submit Capacity-Shock Prediction",
+            type="primary",
+            disabled=(direction is None or predicted_price is None),
+        ):
+            st.session_state["lab_stage3_direction"] = direction
+            st.session_state["lab_stage3_predicted_price"] = float(predicted_price)
+            st.session_state["lab_stage3_prediction_locked"] = True
             st.rerun()
     else:
-        st.success("Your Saturday repricing decision is locked.")
-        if not st.session_state["lab_stage3_revealed"]:
-            if st.button("Reveal Optimized Saturday Response"):
-                st.session_state["lab_stage3_revealed"] = True
+        st.success(
+            f"Prediction recorded: {st.session_state['lab_stage3_direction']}; "
+            f"predicted price {money2(st.session_state['lab_stage3_predicted_price'])}."
+        )
+
+        c1, c2 = st.columns([1, 1.3])
+        with c1:
+            shock_price = st.slider(
+                "Test and set your revised Saturday price",
+                0.0,
+                50.0,
+                float(st.session_state["lab_stage3_predicted_price"]),
+                0.5,
+                key="shock_sat_price",
+                disabled=st.session_state["lab_stage3_locked"],
+            )
+            shock_demand = float(logit_demand(shock_price, sat["D"], sat["a"], sat["b"]))
+            shock_sold = min(shock_demand, 700.0)
+            shock_rev = shock_price * shock_sold
+
+            st.metric("Expected Demand", f"{shock_demand:,.0f}")
+            st.metric("Tickets Sold", f"{shock_sold:,.0f}")
+            st.metric("Saturday Revenue", money(shock_rev))
+
+        with c2:
+            cap_view = pd.DataFrame(
+                {
+                    "Metric": ["Capacity", "Expected Demand", "Tickets Sold"],
+                    "Customers": [700.0, shock_demand, shock_sold],
+                }
+            ).set_index("Metric")
+            st.bar_chart(cap_view)
+
+        if not st.session_state["lab_stage3_locked"]:
+            if st.button("Lock My Saturday Repricing", type="primary"):
+                st.session_state["lab_stage3_locked"] = True
+                st.session_state["lab_capacity_shock"] = {
+                    "student_price": shock_price,
+                    "expected_demand": shock_demand,
+                    "tickets_sold": shock_sold,
+                    "revenue": shock_rev,
+                }
                 st.rerun()
         else:
-            sat_opt_700 = optimize_day(sat["D"], sat["a"], sat["b"], 700.0, BASE_COST)
-            st.info(
-                f"Optimized Saturday price with capacity 700: **{money_md(sat_opt_700['price'], 2)}** · "
-                f"Tickets sold: **{sat_opt_700['served']:,.0f}** · "
-                f"Revenue: **{money_md(sat_opt_700['revenue'])}**"
-            )
+            st.success("Your Saturday repricing decision is locked.")
+            if not st.session_state["lab_stage3_revealed"]:
+                if st.button("Reveal Optimized Saturday Response"):
+                    sat_opt_700 = optimize_day(sat["D"], sat["a"], sat["b"], 700.0, BASE_COST)
+                    st.session_state["lab_capacity_shock"]["optimized_price"] = sat_opt_700["price"]
+                    st.session_state["lab_capacity_shock"]["optimized_revenue"] = sat_opt_700["revenue"]
+                    st.session_state["lab_stage3_revealed"] = True
+                    st.rerun()
+            else:
+                sat_opt_700 = optimize_day(sat["D"], sat["a"], sat["b"], 700.0, BASE_COST)
+                actual_direction = (
+                    "Increase" if sat_opt_700["price"] > baseline_opt["price"] + 0.01
+                    else "Decrease" if sat_opt_700["price"] < baseline_opt["price"] - 0.01
+                    else "Remain approximately unchanged"
+                )
+                st.info(
+                    f"Your prediction: **{st.session_state['lab_stage3_direction']}** · "
+                    f"Model result: **{actual_direction}**  \n"
+                    f"Optimized Saturday price with capacity 700: **{money_md(sat_opt_700['price'], 2)}** · "
+                    f"Tickets sold: **{sat_opt_700['served']:,.0f}** · "
+                    f"Revenue: **{money_md(sat_opt_700['revenue'])}**"
+                )
 
 # -----------------------------
 # Stage 4
 # -----------------------------
 
-st.header("Stage 4 · Demand Shock")
+st.header("Stage 4 · Demand Shock: Predict Before You Reprice")
 
 if not st.session_state["lab_stage3_revealed"]:
     st.warning("Complete Stage 3 first.")
@@ -658,197 +772,288 @@ else:
 
     tue = BASELINE[BASELINE["Day"] == "Tuesday"].iloc[0]
     original_tue_opt = optimize_day(tue["D"], tue["a"], tue["b"], BASE_CAPACITY, BASE_COST)
+    st.metric("Original Optimized Tuesday Price", money2(original_tue_opt["price"]))
 
-    c1, c2 = st.columns([1, 1.3])
-    with c1:
-        st.metric("Original Optimized Tuesday Price", money2(original_tue_opt["price"]))
-        tue_price = st.slider(
-            "Set your revised Tuesday price",
-            0.0,
-            50.0,
-            float(original_tue_opt["price"]),
-            0.5,
-            key="shock_tue_price",
-            disabled=st.session_state["lab_stage4_locked"],
+    if not st.session_state["lab_stage4_prediction_locked"]:
+        direction = st.radio(
+            "Before testing prices: what do you expect to happen to the optimal Tuesday price?",
+            ["Increase", "Decrease", "Remain approximately unchanged"],
+            index=None,
+            key="lab_stage4_direction_widget",
         )
-        tue_demand = float(logit_demand(tue_price, 1900.0, tue["a"], tue["b"]))
-        tue_sold = min(tue_demand, BASE_CAPACITY)
-        tue_rev = tue_price * tue_sold
-
-        st.metric("Expected Demand", f"{tue_demand:,.0f}")
-        st.metric("Tickets Sold", f"{tue_sold:,.0f}")
-        st.metric("Tuesday Revenue", money(tue_rev))
-
-    with c2:
-        demand_view = pd.DataFrame(
-            {
-                "Metric": ["Capacity", "Expected Demand", "Tickets Sold"],
-                "Customers": [BASE_CAPACITY, tue_demand, tue_sold],
-            }
-        ).set_index("Metric")
-        st.bar_chart(demand_view)
-
-    if not st.session_state["lab_stage4_locked"]:
-        if st.button("Lock My Tuesday Repricing", type="primary"):
-            st.session_state["lab_stage4_locked"] = True
-            st.session_state["lab_demand_shock"] = {
-                "student_price": tue_price,
-                "expected_demand": tue_demand,
-                "tickets_sold": tue_sold,
-                "revenue": tue_rev,
-            }
+        predicted_price = st.number_input(
+            "Enter your predicted new optimal Tuesday price",
+            min_value=0.0,
+            max_value=50.0,
+            value=None,
+            step=0.50,
+            key="lab_stage4_pred_price_widget",
+        )
+        if st.button(
+            "Submit Demand-Shock Prediction",
+            type="primary",
+            disabled=(direction is None or predicted_price is None),
+        ):
+            st.session_state["lab_stage4_direction"] = direction
+            st.session_state["lab_stage4_predicted_price"] = float(predicted_price)
+            st.session_state["lab_stage4_prediction_locked"] = True
             st.rerun()
     else:
-        st.success("Your Tuesday repricing decision is locked.")
-        if not st.session_state["lab_stage4_revealed"]:
-            if st.button("Reveal Optimized Tuesday Response"):
-                st.session_state["lab_stage4_revealed"] = True
+        st.success(
+            f"Prediction recorded: {st.session_state['lab_stage4_direction']}; "
+            f"predicted price {money2(st.session_state['lab_stage4_predicted_price'])}."
+        )
+
+        c1, c2 = st.columns([1, 1.3])
+        with c1:
+            tue_price = st.slider(
+                "Test and set your revised Tuesday price",
+                0.0,
+                50.0,
+                float(st.session_state["lab_stage4_predicted_price"]),
+                0.5,
+                key="shock_tue_price",
+                disabled=st.session_state["lab_stage4_locked"],
+            )
+            tue_demand = float(logit_demand(tue_price, 1900.0, tue["a"], tue["b"]))
+            tue_sold = min(tue_demand, BASE_CAPACITY)
+            tue_rev = tue_price * tue_sold
+
+            st.metric("Expected Demand", f"{tue_demand:,.0f}")
+            st.metric("Tickets Sold", f"{tue_sold:,.0f}")
+            st.metric("Tuesday Revenue", money(tue_rev))
+
+        with c2:
+            demand_view = pd.DataFrame(
+                {
+                    "Metric": ["Capacity", "Expected Demand", "Tickets Sold"],
+                    "Customers": [BASE_CAPACITY, tue_demand, tue_sold],
+                }
+            ).set_index("Metric")
+            st.bar_chart(demand_view)
+
+        if not st.session_state["lab_stage4_locked"]:
+            if st.button("Lock My Tuesday Repricing", type="primary"):
+                st.session_state["lab_stage4_locked"] = True
+                st.session_state["lab_demand_shock"] = {
+                    "student_price": tue_price,
+                    "expected_demand": tue_demand,
+                    "tickets_sold": tue_sold,
+                    "revenue": tue_rev,
+                }
                 st.rerun()
         else:
-            tue_opt_1900 = optimize_day(1900.0, tue["a"], tue["b"], BASE_CAPACITY, BASE_COST)
-            st.info(
-                f"Optimized Tuesday price after the demand increase: **{money_md(tue_opt_1900['price'], 2)}** · "
-                f"Tickets sold: **{tue_opt_1900['served']:,.0f}** · "
-                f"Revenue: **{money_md(tue_opt_1900['revenue'])}**"
-            )
+            st.success("Your Tuesday repricing decision is locked.")
+            if not st.session_state["lab_stage4_revealed"]:
+                if st.button("Reveal Optimized Tuesday Response"):
+                    tue_opt_1900 = optimize_day(1900.0, tue["a"], tue["b"], BASE_CAPACITY, BASE_COST)
+                    st.session_state["lab_demand_shock"]["optimized_price"] = tue_opt_1900["price"]
+                    st.session_state["lab_demand_shock"]["optimized_revenue"] = tue_opt_1900["revenue"]
+                    st.session_state["lab_stage4_revealed"] = True
+                    st.rerun()
+            else:
+                tue_opt_1900 = optimize_day(1900.0, tue["a"], tue["b"], BASE_CAPACITY, BASE_COST)
+                actual_direction = (
+                    "Increase" if tue_opt_1900["price"] > original_tue_opt["price"] + 0.01
+                    else "Decrease" if tue_opt_1900["price"] < original_tue_opt["price"] - 0.01
+                    else "Remain approximately unchanged"
+                )
+                st.info(
+                    f"Your prediction: **{st.session_state['lab_stage4_direction']}** · "
+                    f"Model result: **{actual_direction}**  \n"
+                    f"Optimized Tuesday price after the demand increase: **{money_md(tue_opt_1900['price'], 2)}** · "
+                    f"Tickets sold: **{tue_opt_1900['served']:,.0f}** · "
+                    f"Revenue: **{money_md(tue_opt_1900['revenue'])}**"
+                )
 
 # -----------------------------
 # Stage 5
 # -----------------------------
 
-st.header("Stage 5 · Segmented Pricing")
+st.header("Stage 5 · Segmented Pricing: Predict Before You Price")
 
 if not st.session_state["lab_stage4_revealed"]:
     st.warning("Complete Stage 4 first.")
 else:
     st.write(
         "A separate venue has two customer segments with different price sensitivities. "
-        "First choose one price for everyone, then choose separate prices for the two segments."
+        "Both use the logit demand model and share a capacity of 3,000."
     )
 
     seg_A = {"D": 9000.0, "a": 1.0, "b": -0.2}
     seg_B = {"D": 5000.0, "a": 1.0, "b": -0.5}
     shared_capacity = 3000.0
 
-    s1, s2, s3 = st.columns(3)
-    with s1:
-        common_p = st.slider(
-            "One price for everyone",
-            0.0,
-            20.0,
-            8.0,
-            0.25,
-            key="seg_common",
-            disabled=st.session_state["lab_stage5_locked"],
-        )
-    with s2:
-        pA = st.slider(
-            "Segment A price",
-            0.0,
-            20.0,
-            10.0,
-            0.25,
-            key="seg_A",
-            disabled=st.session_state["lab_stage5_locked"],
-        )
-    with s3:
-        pB = st.slider(
-            "Segment B price",
-            0.0,
-            20.0,
-            6.0,
-            0.25,
-            key="seg_B",
-            disabled=st.session_state["lab_stage5_locked"],
-        )
-
-    qA_c = float(logit_demand(common_p, **seg_A))
-    qB_c = float(logit_demand(common_p, **seg_B))
-    total_c = qA_c + qB_c
-    scale_c = min(1.0, shared_capacity / total_c) if total_c > 0 else 0
-    soldA_c = qA_c * scale_c
-    soldB_c = qB_c * scale_c
-    common_rev = common_p * (soldA_c + soldB_c)
-
-    qA = float(logit_demand(pA, **seg_A))
-    qB = float(logit_demand(pB, **seg_B))
-    total = qA + qB
-    scale = min(1.0, shared_capacity / total) if total > 0 else 0
-    soldA = qA * scale
-    soldB = qB * scale
-    seg_rev = pA * soldA + pB * soldB
-
-    compare_seg = pd.DataFrame(
-        {
-            "Strategy": ["One Price", "Segmented Prices"],
-            "Segment A Price": [common_p, pA],
-            "Segment B Price": [common_p, pB],
-            "Total Tickets Sold": [soldA_c + soldB_c, soldA + soldB],
-            "Revenue": [common_rev, seg_rev],
-        }
-    )
     st.dataframe(
-        compare_seg.style.format(
-            {
-                "Segment A Price": "${:,.2f}",
-                "Segment B Price": "${:,.2f}",
-                "Total Tickets Sold": "{:,.0f}",
-                "Revenue": "${:,.0f}",
-            }
-        ),
+        pd.DataFrame([
+            {"Segment": "A", "D": seg_A["D"], "a": seg_A["a"], "b": seg_A["b"]},
+            {"Segment": "B", "D": seg_B["D"], "a": seg_B["a"], "b": seg_B["b"]},
+        ]),
         use_container_width=True,
         hide_index=True,
     )
 
-    if not st.session_state["lab_stage5_locked"]:
-        if st.button("Lock My Segmented Pricing Decisions", type="primary"):
-            st.session_state["lab_stage5_locked"] = True
-            st.session_state["lab_segment_result"] = {
-                "common_price": common_p,
-                "common_revenue": common_rev,
-                "segment_A_price": pA,
-                "segment_B_price": pB,
-                "segmented_revenue": seg_rev,
-            }
+    if not st.session_state["lab_stage5_prediction_locked"]:
+        sensitivity = st.radio(
+            "Which segment is more price sensitive based on the b parameter?",
+            ["Segment A", "Segment B", "Both are equally price sensitive"],
+            index=None,
+            key="lab_stage5_sensitivity_widget",
+        )
+        relationship = st.radio(
+            "Which segmented-pricing relationship do you expect the model to recommend?",
+            ["Price A > Price B", "Price A < Price B", "Price A = Price B"],
+            index=None,
+            key="lab_stage5_relationship_widget",
+        )
+        if st.button(
+            "Submit Segmented-Pricing Predictions",
+            type="primary",
+            disabled=(sensitivity is None or relationship is None),
+        ):
+            st.session_state["lab_stage5_sensitive_segment"] = sensitivity
+            st.session_state["lab_stage5_price_relationship"] = relationship
+            st.session_state["lab_stage5_prediction_locked"] = True
             st.rerun()
     else:
-        st.success("Your segmented-pricing decisions are locked.")
+        st.success(
+            f"Predictions recorded: more price sensitive = {st.session_state['lab_stage5_sensitive_segment']}; "
+            f"expected relationship = {st.session_state['lab_stage5_price_relationship']}."
+        )
 
-        if not st.session_state["lab_stage5_revealed"]:
-            if st.button("Reveal Optimized Segmented Pricing"):
-                st.session_state["lab_stage5_revealed"] = True
+        s1, s2, s3 = st.columns(3)
+        with s1:
+            common_p = st.slider(
+                "One price for everyone",
+                0.0,
+                20.0,
+                8.0,
+                0.25,
+                key="seg_common",
+                disabled=st.session_state["lab_stage5_locked"],
+            )
+        with s2:
+            pA = st.slider(
+                "Segment A price",
+                0.0,
+                20.0,
+                10.0,
+                0.25,
+                key="seg_A",
+                disabled=st.session_state["lab_stage5_locked"],
+            )
+        with s3:
+            pB = st.slider(
+                "Segment B price",
+                0.0,
+                20.0,
+                6.0,
+                0.25,
+                key="seg_B",
+                disabled=st.session_state["lab_stage5_locked"],
+            )
+
+        qA_c = float(logit_demand(common_p, **seg_A))
+        qB_c = float(logit_demand(common_p, **seg_B))
+        total_c = qA_c + qB_c
+        scale_c = min(1.0, shared_capacity / total_c) if total_c > 0 else 0
+        soldA_c = qA_c * scale_c
+        soldB_c = qB_c * scale_c
+        common_rev = common_p * (soldA_c + soldB_c)
+
+        qA = float(logit_demand(pA, **seg_A))
+        qB = float(logit_demand(pB, **seg_B))
+        total = qA + qB
+        scale = min(1.0, shared_capacity / total) if total > 0 else 0
+        soldA = qA * scale
+        soldB = qB * scale
+        seg_rev = pA * soldA + pB * soldB
+
+        compare_seg = pd.DataFrame(
+            {
+                "Strategy": ["One Price", "Segmented Prices"],
+                "Segment A Price": [common_p, pA],
+                "Segment B Price": [common_p, pB],
+                "Total Tickets Sold": [soldA_c + soldB_c, soldA + soldB],
+                "Revenue": [common_rev, seg_rev],
+            }
+        )
+        st.dataframe(
+            compare_seg.style.format(
+                {
+                    "Segment A Price": "${:,.2f}",
+                    "Segment B Price": "${:,.2f}",
+                    "Total Tickets Sold": "{:,.0f}",
+                    "Revenue": "${:,.0f}",
+                }
+            ),
+            use_container_width=True,
+            hide_index=True,
+        )
+
+        if not st.session_state["lab_stage5_locked"]:
+            if st.button("Lock My Segmented Pricing Decisions", type="primary"):
+                st.session_state["lab_stage5_locked"] = True
+                st.session_state["lab_segment_result"] = {
+                    "common_price": common_p,
+                    "common_revenue": common_rev,
+                    "segment_A_price": pA,
+                    "segment_B_price": pB,
+                    "segmented_revenue": seg_rev,
+                }
                 st.rerun()
         else:
-            grid = np.arange(0.0, 20.0 + 0.25, 0.25)
+            st.success("Your segmented-pricing decisions are locked.")
 
-            best_common = None
-            for p in grid:
-                qa = float(logit_demand(p, **seg_A))
-                qb = float(logit_demand(p, **seg_B))
-                t = qa + qb
-                sc = min(1.0, shared_capacity / t) if t > 0 else 0
-                rev = p * (qa + qb) * sc
-                if best_common is None or rev > best_common["revenue"]:
-                    best_common = {"price": p, "revenue": rev}
+            if not st.session_state["lab_stage5_revealed"]:
+                if st.button("Reveal Optimized Segmented Pricing"):
+                    grid = np.arange(0.0, 20.0 + 0.25, 0.25)
+                    best_common = None
+                    for p in grid:
+                        qa = float(logit_demand(p, **seg_A))
+                        qb = float(logit_demand(p, **seg_B))
+                        t = qa + qb
+                        sc = min(1.0, shared_capacity / t) if t > 0 else 0
+                        rev = p * (qa + qb) * sc
+                        if best_common is None or rev > best_common["revenue"]:
+                            best_common = {"price": p, "revenue": rev}
 
-            best_seg = None
-            for pa in grid:
-                qa = float(logit_demand(pa, **seg_A))
-                for pb in grid:
-                    qb = float(logit_demand(pb, **seg_B))
-                    t = qa + qb
-                    sc = min(1.0, shared_capacity / t) if t > 0 else 0
-                    rev = pa * qa * sc + pb * qb * sc
-                    if best_seg is None or rev > best_seg["revenue"]:
-                        best_seg = {"pA": pa, "pB": pb, "revenue": rev}
+                    best_seg = None
+                    for pa in grid:
+                        qa = float(logit_demand(pa, **seg_A))
+                        for pb in grid:
+                            qb = float(logit_demand(pb, **seg_B))
+                            t = qa + qb
+                            sc = min(1.0, shared_capacity / t) if t > 0 else 0
+                            rev = pa * qa * sc + pb * qb * sc
+                            if best_seg is None or rev > best_seg["revenue"]:
+                                best_seg = {"pA": pa, "pB": pb, "revenue": rev}
 
-            st.info(
-                f"Optimized common price: **{money_md(best_common['price'], 2)}** · "
-                f"Revenue: **{money_md(best_common['revenue'])}**  \n"
-                f"Optimized segmented prices: **A {money_md(best_seg['pA'], 2)}**, "
-                f"**B {money_md(best_seg['pB'], 2)}** · "
-                f"Revenue: **{money_md(best_seg['revenue'])}**"
-            )
+                    st.session_state["lab_segment_result"]["optimized_common_price"] = best_common["price"]
+                    st.session_state["lab_segment_result"]["optimized_common_revenue"] = best_common["revenue"]
+                    st.session_state["lab_segment_result"]["optimized_A_price"] = best_seg["pA"]
+                    st.session_state["lab_segment_result"]["optimized_B_price"] = best_seg["pB"]
+                    st.session_state["lab_segment_result"]["optimized_revenue"] = best_seg["revenue"]
+                    st.session_state["lab_stage5_revealed"] = True
+                    st.rerun()
+            else:
+                seg = st.session_state["lab_segment_result"]
+                actual_relationship = (
+                    "Price A > Price B" if seg["optimized_A_price"] > seg["optimized_B_price"] + 0.01
+                    else "Price A < Price B" if seg["optimized_A_price"] < seg["optimized_B_price"] - 0.01
+                    else "Price A = Price B"
+                )
+                st.info(
+                    f"Your price-sensitivity prediction: **{st.session_state['lab_stage5_sensitive_segment']}** · "
+                    f"Model interpretation: **Segment B**  \n"
+                    f"Your expected price relationship: **{st.session_state['lab_stage5_price_relationship']}** · "
+                    f"Optimized relationship: **{actual_relationship}**  \n"
+                    f"Optimized common price: **{money_md(seg['optimized_common_price'], 2)}** · "
+                    f"Revenue: **{money_md(seg['optimized_common_revenue'])}**  \n"
+                    f"Optimized segmented prices: **A {money_md(seg['optimized_A_price'], 2)}**, "
+                    f"**B {money_md(seg['optimized_B_price'], 2)}** · "
+                    f"Revenue: **{money_md(seg['optimized_revenue'])}**"
+                )
 
 # -----------------------------
 # Stage 6: Report
@@ -864,6 +1069,15 @@ else:
     cap = st.session_state["lab_capacity_shock"]
     dem = st.session_state["lab_demand_shock"]
     seg = st.session_state["lab_segment_result"]
+    predictions = {
+        "stage1_high_days": st.session_state["lab_stage1_prediction"],
+        "stage3_direction": st.session_state["lab_stage3_direction"],
+        "stage3_predicted_price": st.session_state["lab_stage3_predicted_price"],
+        "stage4_direction": st.session_state["lab_stage4_direction"],
+        "stage4_predicted_price": st.session_state["lab_stage4_predicted_price"],
+        "stage5_sensitive_segment": st.session_state["lab_stage5_sensitive_segment"],
+        "stage5_price_relationship": st.session_state["lab_stage5_price_relationship"],
+    }
 
     summary_rows = [
         ["Student", student_name or "Not entered", ""],
@@ -905,6 +1119,7 @@ else:
                 cap=cap,
                 dem=dem,
                 seg=seg,
+                predictions=predictions,
             )
             st.session_state["lab_pdf_bytes"] = pdf_bytes
             st.session_state["lab_pdf_timestamp"] = generated_at.isoformat(timespec="microseconds")
@@ -935,5 +1150,5 @@ else:
 st.divider()
 st.caption(
     "The lab uses the module's logit price-response model and the theme-park parameters from the pricing assignment. "
-    "The purpose is to let you make pricing decisions before comparing them with an optimization benchmark."
+    "The purpose is to require a conceptual prediction before each pricing experiment, then compare the student's decision with an optimization benchmark."
 )
