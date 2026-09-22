@@ -1,9 +1,8 @@
-Day	D	a	b
-Sunday	190	4	-0.025
-Monday	150	3.5	-0.022
-Tuesday	160	3.6	-0.022
-Wednesday	175	3.8	-0.023
-Thursday	210	4.1	-0.024
-Friday	270	4.5	-0.025
-Saturday	300	4.7	-0.026
-
+Day,	D,	a,	b
+Sunday,	190,	4,	-0.025
+Monday,	150,	3.5,	-0.022
+Tuesday,	160,	3.6,	-0.022
+Wednesday,	175,	3.8,	-0.023
+Thursday,	210,	4.1,	-0.024
+Friday,	270,	4.5,	-0.025
+Saturday,	300,	4.7,	-0.026
