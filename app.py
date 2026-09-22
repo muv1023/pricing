@@ -119,6 +119,64 @@ def money2(x):
     return f"${x:,.2f}"
 
 
+def render_styled_table(df, formats=None, first_col_left=True):
+    """Render a consistent bordered HTML table for the student-facing lab."""
+    formats = formats or {}
+    display_df = df.copy()
+
+    for col, fmt in formats.items():
+        if col in display_df.columns:
+            display_df[col] = display_df[col].map(lambda x: fmt.format(x) if pd.notna(x) else "")
+
+    header_html = "".join(f"<th>{col}</th>" for col in display_df.columns)
+    rows_html = []
+    for _, row in display_df.iterrows():
+        cells = []
+        for i, value in enumerate(row):
+            cls = ' class="first-col"' if first_col_left and i == 0 else ""
+            cells.append(f"<td{cls}>{value}</td>")
+        rows_html.append("<tr>" + "".join(cells) + "</tr>")
+
+    st.markdown(
+        """
+        <style>
+        .pricing-table-wrap { overflow-x: auto; margin: 10px 0 18px 0; }
+        .pricing-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 15px;
+            background: #ffffff;
+        }
+        .pricing-table th {
+            background-color: #003b5c;
+            color: #ffffff;
+            padding: 10px 12px;
+            border: 1px solid #cfd8e3;
+            text-align: center;
+            font-weight: 700;
+            white-space: nowrap;
+        }
+        .pricing-table td {
+            padding: 9px 12px;
+            border: 1px solid #cfd8e3;
+            text-align: center;
+            background-color: #ffffff;
+        }
+        .pricing-table tr:nth-child(even) td { background-color: #f7fafc; }
+        .pricing-table td.first-col { text-align: left; font-weight: 600; }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    table_html = (
+        '<div class="pricing-table-wrap"><table class="pricing-table">'
+        f'<thead><tr>{header_html}</tr></thead>'
+        f'<tbody>{"".join(rows_html)}</tbody></table></div>'
+    )
+    st.markdown(table_html, unsafe_allow_html=True)
+
+
 def money_md(x, decimals=0):
     """Format currency safely inside Streamlit Markdown/alert text.
 
@@ -491,10 +549,19 @@ st.write(
     "use the daily logit demand parameters to predict which days should support the highest room rates."
 )
 
-st.dataframe(
-    BASELINE.rename(columns={"D": "Market Size (D)", "a": "a", "b": "b"}),
-    use_container_width=True,
-    hide_index=True,
+render_styled_table(
+    BASELINE.rename(
+        columns={
+            "D": "Market Size (D)",
+            "a": "Position Parameter (a)",
+            "b": "Price Sensitivity (b)",
+        }
+    ),
+    formats={
+        "Market Size (D)": "{:,.0f}",
+        "Position Parameter (a)": "{:.1f}",
+        "Price Sensitivity (b)": "{:.3f}",
+    },
 )
 
 if not st.session_state["lab_stage1_prediction_locked"]:
@@ -549,18 +616,15 @@ if st.session_state["lab_stage1_prediction_locked"]:
         ["Day", "Price", "Expected Demand", "Rooms Sold", "Capacity Utilization", "Revenue"]
     ].copy()
     display_manual["Capacity Utilization"] = display_manual["Capacity Utilization"] * 100
-    st.dataframe(
-        display_manual.style.format(
-            {
-                "Price": "${:,.2f}",
-                "Expected Demand": "{:,.0f}",
-                "Rooms Sold": "{:,.0f}",
-                "Capacity Utilization": "{:,.1f}%",
-                "Revenue": "${:,.0f}",
-            }
-        ),
-        use_container_width=True,
-        hide_index=True,
+    render_styled_table(
+        display_manual,
+        formats={
+            "Price": "${:,.2f}",
+            "Expected Demand": "{:,.0f}",
+            "Rooms Sold": "{:,.0f}",
+            "Capacity Utilization": "{:,.1f}%",
+            "Revenue": "${:,.0f}",
+        },
     )
 
     if not st.session_state["lab_stage1_locked"]:
@@ -611,17 +675,14 @@ else:
                 "Optimized Revenue": opt_df["Revenue"].values,
             }
         )
-        st.dataframe(
-            compare.style.format(
-                {
-                    "Your Price": "${:,.2f}",
-                    "Optimized Price": "${:,.2f}",
-                    "Your Revenue": "${:,.0f}",
-                    "Optimized Revenue": "${:,.0f}",
-                }
-            ),
-            use_container_width=True,
-            hide_index=True,
+        render_styled_table(
+            compare,
+            formats={
+                "Your Price": "${:,.2f}",
+                "Optimized Price": "${:,.2f}",
+                "Your Revenue": "${:,.0f}",
+                "Optimized Revenue": "${:,.0f}",
+            },
         )
         st.bar_chart(compare.set_index("Day")[["Your Price", "Optimized Price"]])
 
@@ -877,13 +938,26 @@ else:
     seg_B = {"D": 180.0, "a": 4.0, "b": -0.030}
     shared_capacity = 120.0
 
-    st.dataframe(
+    render_styled_table(
         pd.DataFrame([
-            {"Segment": "A - Business", "D": seg_A["D"], "a": seg_A["a"], "b": seg_A["b"]},
-            {"Segment": "B - Leisure", "D": seg_B["D"], "a": seg_B["a"], "b": seg_B["b"]},
+            {
+                "Segment": "A - Business",
+                "Market Size (D)": seg_A["D"],
+                "Position Parameter (a)": seg_A["a"],
+                "Price Sensitivity (b)": seg_A["b"],
+            },
+            {
+                "Segment": "B - Leisure",
+                "Market Size (D)": seg_B["D"],
+                "Position Parameter (a)": seg_B["a"],
+                "Price Sensitivity (b)": seg_B["b"],
+            },
         ]),
-        use_container_width=True,
-        hide_index=True,
+        formats={
+            "Market Size (D)": "{:,.0f}",
+            "Position Parameter (a)": "{:.1f}",
+            "Price Sensitivity (b)": "{:.3f}",
+        },
     )
 
     if not st.session_state["lab_stage5_prediction_locked"]:
@@ -971,17 +1045,14 @@ else:
                 "Revenue": [common_rev, seg_rev],
             }
         )
-        st.dataframe(
-            compare_seg.style.format(
-                {
-                    "Segment A Price": "${:,.2f}",
-                    "Segment B Price": "${:,.2f}",
-                    "Rooms Sold": "{:,.0f}",
-                    "Revenue": "${:,.0f}",
-                }
-            ),
-            use_container_width=True,
-            hide_index=True,
+        render_styled_table(
+            compare_seg,
+            formats={
+                "Segment A Price": "${:,.2f}",
+                "Segment B Price": "${:,.2f}",
+                "Rooms Sold": "{:,.0f}",
+                "Revenue": "${:,.0f}",
+            },
         )
 
         if not st.session_state["lab_stage5_locked"]:
@@ -1086,7 +1157,7 @@ else:
         ["Your segmented-pricing revenue", seg["segmented_revenue"], "USD"],
     ]
     summary_df = pd.DataFrame(summary_rows, columns=["Metric", "Value", "Unit"])
-    st.dataframe(summary_df, use_container_width=True, hide_index=True)
+    render_styled_table(summary_df, first_col_left=True)
 
     st.info(
         "The final PDF records the exact server generation time in U.S. Eastern Time and UTC. "
