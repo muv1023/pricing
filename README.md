@@ -1,18 +1,25 @@
-# Pricing Analytics Decision Lab - Version 4.0
+# Pricing Analytics Decision Lab - Version 4.1
 
-This version changes the lab from a slider-based sandbox into a guided **prediction -> experiment -> decision -> optimization -> feedback** activity.
+This version uses a **hotel revenue-management scenario** that is deliberately different from the graded theme-park data in Questions 3 and 4. The learning sequence remains **prediction -> experiment -> decision -> optimization -> feedback**.
 
 ## Student sequence
 
-1. Predict which days should support the highest prices from the logit demand parameters.
-2. Build and lock a seven-day theme-park pricing strategy.
-3. Benchmark the strategy against optimized variable prices.
-4. Predict the direction and value of the price change before responding to a Saturday capacity shock.
-5. Predict the direction and value of the price change before responding to a Tuesday demand shock.
-6. Identify price sensitivity and predict the price relationship before testing segmented pricing.
+1. Predict which nights should support the highest room rates from the logit demand parameters.
+2. Build and lock a seven-night hotel pricing strategy.
+3. Benchmark the strategy against optimized variable room rates.
+4. Predict and respond to a Saturday capacity shock when 30 rooms go out of service.
+5. Predict and respond to a Tuesday demand shock caused by a convention.
+6. Identify price sensitivity and test segmented pricing for business and leisure guests.
 7. Generate a verified PDF report.
 
-The app does **not** immediately mark the prediction MCQs correct or incorrect. Students commit to their prediction first, make the pricing decision, and only then see the model result.
+The app does **not** immediately mark prediction MCQs correct or incorrect. Students commit to a prediction first, make the pricing decision, and only then see the model result.
+
+## Hotel baseline
+
+- Capacity: 120 rooms per night
+- Marginal cost used in the lab: $0 for the simplified revenue-management exercise
+- Demand model: logit price-response function
+- Daily parameters are stored in `data/hotel_parameters.csv`
 
 ## Verified report
 
@@ -31,7 +38,7 @@ app.py
 requirements.txt
 README.md
 .streamlit/config.toml
-data/theme_park_parameters.csv
+data/hotel_parameters.csv
 ```
 
 ## Run locally
