@@ -1,5 +1,7 @@
 import io
 import hashlib
+import sqlite3
+from pathlib import Path
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -216,6 +218,44 @@ def reset_lab():
 # -----------------------------
 
 EASTERN_TZ = ZoneInfo("America/New_York")
+REVEAL_UNLOCK = datetime(2026, 11, 5, 0, 0, 0, tzinfo=EASTERN_TZ)
+MAX_ATTEMPTS = 3
+ATTEMPT_DB = Path("/tmp/ban517_pricing_attempts.sqlite3")
+
+def reveal_is_unlocked():
+    return datetime.now(EASTERN_TZ) >= REVEAL_UNLOCK
+
+def _student_key(student_id):
+    return hashlib.sha256(student_id.strip().lower().encode("utf-8")).hexdigest()
+
+def _attempt_conn():
+    conn = sqlite3.connect(ATTEMPT_DB)
+    conn.execute("CREATE TABLE IF NOT EXISTS attempts (student_key TEXT PRIMARY KEY, completed INTEGER NOT NULL DEFAULT 0)")
+    conn.commit()
+    return conn
+
+def completed_attempts(student_id):
+    if not student_id or not student_id.strip(): return 0
+    conn = _attempt_conn()
+    try:
+        row = conn.execute("SELECT completed FROM attempts WHERE student_key=?", (_student_key(student_id),)).fetchone()
+        return int(row[0]) if row else 0
+    finally:
+        conn.close()
+
+def record_completed_attempt(student_id):
+    conn = _attempt_conn()
+    try:
+        key = _student_key(student_id)
+        row = conn.execute("SELECT completed FROM attempts WHERE student_key=?", (key,)).fetchone()
+        current = int(row[0]) if row else 0
+        if current >= MAX_ATTEMPTS: return current
+        new_count = current + 1
+        conn.execute("INSERT INTO attempts(student_key,completed) VALUES(?,?) ON CONFLICT(student_key) DO UPDATE SET completed=excluded.completed", (key,new_count))
+        conn.commit()
+        return new_count
+    finally:
+        conn.close()
 
 
 def make_verification_code(student_id, generated_at):
@@ -225,7 +265,7 @@ def make_verification_code(student_id, generated_at):
 
 
 def build_pdf_report(student_name, student_id, course_section, generated_at, verification_code,
-                     manual_locked, opt_df, cap, dem, seg, predictions):
+                     manual_locked, opt_df, cap, dem, seg, predictions, benchmarks_visible, attempt_number):
     """Build the student's pricing lab report entirely in memory."""
     buffer = io.BytesIO()
 
@@ -332,7 +372,8 @@ def build_pdf_report(student_name, student_id, course_section, generated_at, ver
 
     student_table = [
         ["Student", student_name or "Not entered", "Student ID", student_id],
-        ["Section", course_section or "-", "Generated", time_display],
+        ["Section", course_section or "-", "Attempt", f"{attempt_number} of {MAX_ATTEMPTS}"],
+        ["Generated", time_display, "Benchmark status", "Visible" if benchmarks_visible else "Locked until Nov. 5, 2026"],
     ]
     stbl = Table(student_table, colWidths=[0.8*inch, 2.05*inch, 0.8*inch, 3.0*inch])
     stbl.setStyle(TableStyle([
@@ -377,22 +418,13 @@ def build_pdf_report(student_name, student_id, course_section, generated_at, ver
     ))
 
     story.append(Paragraph("Stage 2 - Optimization Benchmark", styles["Section"]))
-    benchmark_rows = [["Day", "Student Price", "Optimized Price", "Student Revenue", "Optimized Revenue"]]
-    for i, day in enumerate(DAYS):
-        benchmark_rows.append([
-            day,
-            fmt_money(manual_locked.iloc[i]["Price"]),
-            fmt_money(opt_df.iloc[i]["Price"]),
-            fmt_money(manual_locked.iloc[i]["Revenue"]),
-            fmt_money(opt_df.iloc[i]["Revenue"]),
-        ])
-    story.append(styled_table(benchmark_rows, [1.0*inch, 1.05*inch, 1.05*inch, 1.2*inch, 1.2*inch]))
-    story.append(Spacer(1, 5))
-    story.append(Paragraph(
-        f"Optimized weekly revenue: <b>{fmt_money(opt_df['Revenue'].sum())}</b> | "
-        f"Difference from student strategy: <b>{fmt_money(opt_df['Revenue'].sum() - manual_locked['Revenue'].sum())}</b>",
-        styles["BodySmall"],
-    ))
+    if benchmarks_visible:
+        benchmark_rows = [["Day", "Student Price", "Optimized Price", "Student Revenue", "Optimized Revenue"]]
+        for i, day in enumerate(DAYS):
+            benchmark_rows.append([day, fmt_money(manual_locked.iloc[i]["Price"]), fmt_money(opt_df.iloc[i]["Price"]), fmt_money(manual_locked.iloc[i]["Revenue"]), fmt_money(opt_df.iloc[i]["Revenue"])])
+        story.append(styled_table(benchmark_rows, [1.0*inch,1.05*inch,1.05*inch,1.2*inch,1.2*inch]))
+    else:
+        story.append(Paragraph("Optimization benchmarks are intentionally withheld until November 5, 2026.", styles["BodySmall"]))
 
     story.append(PageBreak())
     story.append(Paragraph("Stage 3 - Hotel Capacity Shock", styles["Section"]))
@@ -406,7 +438,7 @@ def build_pdf_report(student_name, student_id, course_section, generated_at, ver
     cap_result_rows = [
         ["Scenario", "Student Price", "Expected Demand", "Rooms Sold", "Revenue", "Optimized Price"],
         ["Saturday capacity = 90", fmt_money(cap["student_price"]), fmt_num(cap["expected_demand"]),
-         fmt_num(cap["rooms_sold"]), fmt_money(cap["revenue"]), fmt_money(cap["optimized_price"])],
+         fmt_num(cap["rooms_sold"]), fmt_money(cap["revenue"]), fmt_money(cap.get("optimized_price", 0)) if benchmarks_visible else "Locked"],
     ]
     story.append(styled_table(cap_result_rows, [1.55*inch, 0.95*inch, 1.0*inch, 0.9*inch, 0.95*inch, 1.0*inch], font_size=7.5))
 
@@ -421,7 +453,7 @@ def build_pdf_report(student_name, student_id, course_section, generated_at, ver
     dem_result_rows = [
         ["Scenario", "Student Price", "Expected Demand", "Rooms Sold", "Revenue", "Optimized Price"],
         ["Tuesday D = 230", fmt_money(dem["student_price"]), fmt_num(dem["expected_demand"]),
-         fmt_num(dem["rooms_sold"]), fmt_money(dem["revenue"]), fmt_money(dem["optimized_price"])],
+         fmt_num(dem["rooms_sold"]), fmt_money(dem["revenue"]), fmt_money(dem.get("optimized_price", 0)) if benchmarks_visible else "Locked"],
     ]
     story.append(styled_table(dem_result_rows, [1.55*inch, 0.95*inch, 1.0*inch, 0.9*inch, 0.95*inch, 1.0*inch], font_size=7.5))
 
@@ -433,13 +465,11 @@ def build_pdf_report(student_name, student_id, course_section, generated_at, ver
     ]
     story.append(styled_table(seg_pred_rows, [2.8*inch, 2.6*inch]))
     story.append(Spacer(1, 5))
-    seg_rows = [
-        ["Strategy", "Business Price", "Leisure Price", "Revenue"],
-        ["One common price", fmt_money(seg["common_price"]), fmt_money(seg["common_price"]), fmt_money(seg["common_revenue"])],
-        ["Student segmented prices", fmt_money(seg["segment_A_price"]), fmt_money(seg["segment_B_price"]), fmt_money(seg["segmented_revenue"])],
-        ["Optimized segmented prices", fmt_money(seg["optimized_A_price"]), fmt_money(seg["optimized_B_price"]), fmt_money(seg["optimized_revenue"])],
-    ]
-    story.append(styled_table(seg_rows, [2.0*inch, 1.35*inch, 1.35*inch, 1.35*inch]))
+    seg_rows = [["Strategy", "Business Price", "Leisure Price", "Total Demand", "Revenue"]]
+    seg_rows.append(["Student segmented prices", fmt_money(seg["segment_A_price"]), fmt_money(seg["segment_B_price"]), f"{seg['total_segment_demand']:.2f}", fmt_money(seg["segmented_revenue"])])
+    if benchmarks_visible and "optimized_A_price" in seg:
+        seg_rows.append(["Optimized segmented prices", fmt_money(seg["optimized_A_price"]), fmt_money(seg["optimized_B_price"]), f"{seg['optimized_total_demand']:.2f}", fmt_money(seg["optimized_revenue"])])
+    story.append(styled_table(seg_rows, [1.8*inch,1.2*inch,1.2*inch,1.1*inch,1.2*inch]))
 
     story.append(Spacer(1, 10))
     story.append(Paragraph("Completion Record", styles["Section"]))
@@ -544,8 +574,13 @@ st.markdown(
 st.info(
     "**How to use this lab:** Solve the pricing problems independently before finalizing your answers. "
     "Excel Solver is recommended. Use the sliders to enter and test your prices, refine them if needed, "
-    "and then lock your decision. The lab will reveal its optimization benchmark only after you commit."
+    "and then lock your decision. Optimization benchmarks and explanatory answers are locked until **November 5, 2026**."
 )
+
+if reveal_is_unlocked():
+    st.success("Optimization benchmarks are now available for review.")
+else:
+    st.warning("Optimization benchmarks and Think About It explanations will unlock on November 5, 2026.")
 
 with st.expander("Recommended Excel Solver setup", expanded=False):
     st.markdown(
@@ -606,6 +641,9 @@ with st.sidebar:
     student_name = st.text_input("Name", key="lab_student_name")
     student_id = st.text_input("Student ID", key="lab_student_id", help="Required to generate the final PDF report.")
     course_section = st.text_input("Section (optional)", key="lab_section")
+    attempts_used = completed_attempts(student_id) if student_id.strip() else 0
+    if student_id.strip():
+        st.caption(f"Completed attempts: {attempts_used} of {MAX_ATTEMPTS} · Remaining: {max(0, MAX_ATTEMPTS-attempts_used)}")
     st.divider()
     st.markdown("### Lab sequence")
     st.markdown(
@@ -620,7 +658,7 @@ with st.sidebar:
         """
     )
     st.divider()
-    if st.button("Reset entire lab", type="secondary"):
+    if st.button("Start Over / New Attempt", type="secondary"):
         reset_lab()
         initialize_state()
         st.rerun()
@@ -728,66 +766,23 @@ else:
 # Stage 2
 # -----------------------------
 
-st.header("Stage 2 · Benchmark Against Optimization")
-
+st.header("Stage 2 · Optimization Benchmark")
 if not st.session_state["lab_stage1_locked"]:
-    st.warning("Lock your Stage 1 pricing strategy before benchmarking it.")
+    st.warning("Lock your Stage 1 pricing strategy first.")
+elif not reveal_is_unlocked():
+    st.info("Your Stage 1 strategy is recorded. The optimized benchmark is locked until **November 5, 2026**. Continue to Stage 3 using your own Solver analysis.")
+    st.markdown("**Think About It:** If a revenue-maximizing solution leaves some rooms unsold, why might lowering the price to fill every room reduce total revenue?")
 else:
     if not st.session_state["lab_stage2_revealed"]:
-        st.write(
-            "You have made the pricing decision. Now you may reveal the optimized variable-pricing benchmark."
-        )
-        if st.button("Run Pricing Optimizer", type="primary"):
+        if st.button("Reveal Weekly Optimization Benchmark", type="primary"):
             st.session_state["lab_stage2_revealed"] = True
             st.rerun()
     else:
-        opt_df = variable_optimum()
-        manual_locked = st.session_state["lab_manual_schedule"]
-
-        manual_revenue = float(manual_locked["Revenue"].sum())
-        opt_revenue = float(opt_df["Revenue"].sum())
-        improvement = opt_revenue - manual_revenue
-
-        b1, b2, b3 = st.columns(3)
-        b1.metric("Your Weekly Revenue", money(manual_revenue))
-        b2.metric("Optimized Weekly Revenue", money(opt_revenue))
-        b3.metric("Revenue Difference", money(improvement))
-
-        compare = pd.DataFrame(
-            {
-                "Day": DAYS,
-                "Your Price": manual_locked["Price"].values,
-                "Optimized Price": opt_df["Price"].values,
-                "Your Revenue": manual_locked["Revenue"].values,
-                "Optimized Revenue": opt_df["Revenue"].values,
-            }
-        )
-        render_styled_table(
-            compare,
-            formats={
-                "Your Price": "${:,.2f}",
-                "Optimized Price": "${:,.2f}",
-                "Your Revenue": "${:,.0f}",
-                "Optimized Revenue": "${:,.0f}",
-            },
-        )
-        st.bar_chart(compare.set_index("Day")[["Your Price", "Optimized Price"]])
-
-        top3 = ", ".join(opt_df.sort_values("Price", ascending=False).head(3)["Day"].tolist())
-        expected_stage1 = "Thursday, Friday, Saturday"
-        supported = st.session_state["lab_stage1_prediction"] == expected_stage1
-        st.info(
-            f"Your pre-analysis prediction: **{st.session_state['lab_stage1_prediction']}**  \n"
-            f"Three highest optimized-price days in this model: **{top3}**  \n"
-            f"Prediction supported by the model: **{'Yes' if supported else 'No'}**"
-        )
+        opt_df = variable_optimum(); manual_locked = st.session_state["lab_manual_schedule"]
+        compare = pd.DataFrame({"Day":DAYS,"Your Price":manual_locked["Price"].values,"Optimized Price":opt_df["Price"].values,"Your Revenue":manual_locked["Revenue"].values,"Optimized Revenue":opt_df["Revenue"].values})
+        render_styled_table(compare, formats={"Your Price":"${:,.2f}","Optimized Price":"${:,.2f}","Your Revenue":"${:,.0f}","Optimized Revenue":"${:,.0f}"})
         with st.expander("Think About It · Why are some rooms intentionally left unsold?"):
-            st.write(
-                "On Monday, Tuesday, and Wednesday, the revenue-maximizing solution may leave some rooms unsold "
-                "even though capacity is available. Filling those additional rooms would require lowering the room "
-                "rate enough that the additional volume would not offset the revenue lost from the lower price. "
-                "Maximizing occupancy and maximizing revenue are different objectives."
-            )
+            st.write("Filling every room can require a price reduction large enough to reduce total revenue. Revenue maximization and occupancy maximization are different objectives.")
 
 # -----------------------------
 # Stage 3
@@ -795,8 +790,8 @@ else:
 
 st.header("Stage 3 · Capacity Shock: Predict Before You Reprice")
 
-if not st.session_state["lab_stage2_revealed"]:
-    st.warning("Complete Stage 2 first.")
+if not st.session_state["lab_stage1_locked"]:
+    st.warning("Complete and lock Stage 1 first.")
 else:
     st.markdown(
         """
@@ -807,7 +802,7 @@ else:
 
     sat = BASELINE[BASELINE["Day"] == "Saturday"].iloc[0]
     baseline_opt = optimize_day(sat["D"], sat["a"], sat["b"], BASE_CAPACITY, BASE_COST)
-    st.metric("Original Optimized Saturday Room Rate", money2(baseline_opt["price"]))
+    st.caption("Baseline Saturday capacity is 120 rooms. Use your own Solver model to establish the baseline price.")
 
     if not st.session_state["lab_stage3_prediction_locked"]:
         direction = st.radio(
@@ -879,7 +874,10 @@ else:
                 st.rerun()
         else:
             st.success("Your Saturday repricing decision is locked.")
-            if not st.session_state["lab_stage3_revealed"]:
+            if not reveal_is_unlocked():
+                st.info("Decision recorded. The optimized response and explanation unlock on **November 5, 2026**. Continue to Stage 4.")
+                st.markdown("**Think About It:** How should a reduction in available rooms affect the hotel's pricing decision when demand has not changed?")
+            elif not st.session_state["lab_stage3_revealed"]:
                 if st.button("Reveal Optimized Saturday Response"):
                     sat_opt_90 = optimize_day(sat["D"], sat["a"], sat["b"], 90.0, BASE_COST)
                     st.session_state["lab_capacity_shock"]["optimized_price"] = sat_opt_90["price"]
@@ -914,8 +912,8 @@ else:
 
 st.header("Stage 4 · Demand Shock: Predict Before You Reprice")
 
-if not st.session_state["lab_stage3_revealed"]:
-    st.warning("Complete Stage 3 first.")
+if not st.session_state["lab_stage3_locked"]:
+    st.warning("Complete and lock Stage 3 first.")
 else:
     st.markdown(
         """
@@ -928,7 +926,7 @@ else:
 
     tue = BASELINE[BASELINE["Day"] == "Tuesday"].iloc[0]
     original_tue_opt = optimize_day(tue["D"], tue["a"], tue["b"], BASE_CAPACITY, BASE_COST)
-    st.metric("Original Optimized Tuesday Room Rate", money2(original_tue_opt["price"]))
+    st.caption("Capacity is back to 120 rooms. Use your own Solver model to establish the original Tuesday price.")
 
     if not st.session_state["lab_stage4_prediction_locked"]:
         direction = st.radio(
@@ -1000,7 +998,10 @@ else:
                 st.rerun()
         else:
             st.success("Your Tuesday repricing decision is locked.")
-            if not st.session_state["lab_stage4_revealed"]:
+            if not reveal_is_unlocked():
+                st.info("Decision recorded. The optimized response and explanation unlock on **November 5, 2026**. Continue to Stage 5.")
+                st.markdown("**Think About It:** How should a larger potential market affect the optimal room rate when hotel capacity remains fixed at 120 rooms?")
+            elif not st.session_state["lab_stage4_revealed"]:
                 if st.button("Reveal Optimized Tuesday Response"):
                     tue_opt_230 = optimize_day(230.0, tue["a"], tue["b"], BASE_CAPACITY, BASE_COST)
                     st.session_state["lab_demand_shock"]["optimized_price"] = tue_opt_230["price"]
@@ -1035,8 +1036,8 @@ else:
 
 st.header("Stage 5 · Segmented Pricing: Predict Before You Price")
 
-if not st.session_state["lab_stage4_revealed"]:
-    st.warning("Complete Stage 4 first.")
+if not st.session_state["lab_stage4_locked"]:
+    st.warning("Complete and lock Stage 4 first.")
 else:
     st.markdown(
         """
@@ -1109,82 +1110,28 @@ else:
             "Leisure Demand to be no more than 120 rooms; constrain each price to $0–$300; and use GRG Nonlinear."
         )
 
-        s1, s2, s3 = st.columns(3)
+        s1, s2 = st.columns(2)
         with s1:
-            common_p = st.slider(
-                "One room rate for everyone",
-                0.0, 300.0, 175.0, 0.01,
-                key="seg_common",
-                disabled=st.session_state["lab_stage5_locked"],
-            )
+            pA = st.slider("Business segment room rate",0.0,300.0,225.0,0.01,key="seg_A",disabled=st.session_state["lab_stage5_locked"])
         with s2:
-            pA = st.slider(
-                "Business segment room rate",
-                0.0, 300.0, 225.0, 0.01,
-                key="seg_A",
-                disabled=st.session_state["lab_stage5_locked"],
-            )
-        with s3:
-            pB = st.slider(
-                "Leisure segment room rate",
-                0.0, 300.0, 155.0, 0.01,
-                key="seg_B",
-                disabled=st.session_state["lab_stage5_locked"],
-            )
-
-        qA_c = float(logit_demand(common_p, **seg_A))
-        qB_c = float(logit_demand(common_p, **seg_B))
-        common_total_demand = qA_c + qB_c
-        common_feasible = common_total_demand <= shared_capacity + 1e-9
-        common_rev = common_p * common_total_demand if common_feasible else np.nan
-
-        qA = float(logit_demand(pA, **seg_A))
-        qB = float(logit_demand(pB, **seg_B))
-        total_seg_demand = qA + qB
-        segmented_feasible = total_seg_demand <= shared_capacity + 1e-9
-        seg_rev = pA * qA + pB * qB if segmented_feasible else np.nan
-
-        compare_seg = pd.DataFrame(
-            {
-                "Strategy": ["One Price", "Segmented Prices"],
-                "Business Price": [common_p, pA],
-                "Leisure Price": [common_p, pB],
-                "Business Demand": [qA_c, qA],
-                "Leisure Demand": [qB_c, qB],
-                "Total Demand": [common_total_demand, total_seg_demand],
-                "Capacity Feasible?": ["Yes" if common_feasible else "No", "Yes" if segmented_feasible else "No"],
-                "Revenue": [common_rev, seg_rev],
-            }
-        )
-        render_styled_table(
-            compare_seg,
-            formats={
-                "Business Price": "${:,.2f}",
-                "Leisure Price": "${:,.2f}",
-                "Business Demand": "{:,.2f}",
-                "Leisure Demand": "{:,.2f}",
-                "Total Demand": "{:,.2f}",
-                "Revenue": "${:,.2f}",
-            },
-        )
-
-        if not common_feasible or not segmented_feasible:
-            st.warning(
-                "A pricing strategy is infeasible when expected Business + Leisure demand exceeds the "
-                "120-room capacity. Increase one or both prices until the capacity constraint is satisfied."
-            )
+            pB = st.slider("Leisure segment room rate",0.0,300.0,155.0,0.01,key="seg_B",disabled=st.session_state["lab_stage5_locked"])
+        qA=float(logit_demand(pA,**seg_A)); qB=float(logit_demand(pB,**seg_B)); total_seg_demand=qA+qB
+        segmented_feasible=total_seg_demand <= shared_capacity + 1e-9
+        seg_rev=pA*qA+pB*qB if segmented_feasible else np.nan
+        compare_seg=pd.DataFrame({"Segment":["Business","Leisure","Total"],"Price":[pA,pB,np.nan],"Expected Demand":[qA,qB,total_seg_demand],"Revenue":[pA*qA,pB*qB,seg_rev]})
+        render_styled_table(compare_seg,formats={"Price":"${:,.2f}","Expected Demand":"{:,.2f}","Revenue":"${:,.2f}"})
+        st.caption(f"Shared hotel capacity: 120 rooms · Current total expected demand: {total_seg_demand:.2f}")
+        if not segmented_feasible:
+            st.warning("Combined Business + Leisure demand exceeds 120 rooms. Increase one or both prices before locking your decision.")
 
         if not st.session_state["lab_stage5_locked"]:
             if st.button(
                 "Lock My Segmented Pricing Decisions",
                 type="primary",
-                disabled=(not common_feasible or not segmented_feasible),
+                disabled=(not segmented_feasible),
             ):
                 st.session_state["lab_stage5_locked"] = True
                 st.session_state["lab_segment_result"] = {
-                    "common_price": common_p,
-                    "common_revenue": float(common_rev),
-                    "common_total_demand": common_total_demand,
                     "segment_A_price": pA,
                     "segment_B_price": pB,
                     "segment_A_demand": qA,
@@ -1196,20 +1143,12 @@ else:
         else:
             st.success("Your segmented-pricing decisions are locked.")
 
-            if not st.session_state["lab_stage5_revealed"]:
+            if not reveal_is_unlocked():
+                st.info("Decision recorded. The optimized benchmark and Think About It explanation unlock on **November 5, 2026**. You may now generate your verified report.")
+                st.markdown("**Think About It:** The two customer segments have different price sensitivities but share the same 120-room capacity. How should those differences influence the two prices?")
+            elif not st.session_state["lab_stage5_revealed"]:
                 if st.button("Reveal Optimized Segmented Pricing"):
                     grid = np.arange(PRICE_MIN, PRICE_MAX + PRICE_STEP / 2, PRICE_STEP)
-
-                    # Common-price benchmark subject to total expected demand <= 120.
-                    best_common = None
-                    for p in grid:
-                        qa = float(logit_demand(p, **seg_A))
-                        qb = float(logit_demand(p, **seg_B))
-                        total = qa + qb
-                        if total <= shared_capacity + 1e-9:
-                            rev = p * total
-                            if best_common is None or rev > best_common["revenue"]:
-                                best_common = {"price": float(p), "demand": total, "revenue": float(rev)}
 
                     # Segmented benchmark. Capacity binds at the optimum. For each Business price,
                     # solve the Leisure price that makes q_A + q_B = 120, then retain the best feasible pair.
@@ -1233,9 +1172,6 @@ else:
                                     "total": total, "revenue": float(rev)
                                 }
 
-                    st.session_state["lab_segment_result"]["optimized_common_price"] = best_common["price"]
-                    st.session_state["lab_segment_result"]["optimized_common_demand"] = best_common["demand"]
-                    st.session_state["lab_segment_result"]["optimized_common_revenue"] = best_common["revenue"]
                     st.session_state["lab_segment_result"]["optimized_A_price"] = best_seg["pA"]
                     st.session_state["lab_segment_result"]["optimized_B_price"] = best_seg["pB"]
                     st.session_state["lab_segment_result"]["optimized_A_demand"] = best_seg["qA"]
@@ -1256,9 +1192,6 @@ else:
                     f"Model interpretation: **Segment B - Leisure**  \n"
                     f"Your expected price relationship: **{st.session_state['lab_stage5_price_relationship']}** · "
                     f"Optimized relationship: **{actual_relationship}**  \n"
-                    f"Optimized common price: **{money_md(seg['optimized_common_price'], 2)}** · "
-                    f"Total expected demand: **{seg['optimized_common_demand']:.2f}** · "
-                    f"Revenue: **{money_md(seg['optimized_common_revenue'], 2)}**  \n"
                     f"Optimized segmented prices: **Business {money_md(seg['optimized_A_price'], 2)}**, "
                     f"**Leisure {money_md(seg['optimized_B_price'], 2)}**  \n"
                     f"Expected demand: **Business {seg['optimized_A_demand']:.2f} + "
@@ -1278,8 +1211,8 @@ else:
 
 st.header("Stage 6 · Generate Your Verified Pricing Lab Report")
 
-if not st.session_state["lab_stage5_revealed"]:
-    st.warning("Complete all prior stages before generating your report.")
+if not st.session_state["lab_stage5_locked"]:
+    st.warning("Complete and lock all prior stages before generating your report.")
 else:
     opt_df = variable_optimum()
     manual_locked = st.session_state["lab_manual_schedule"]
@@ -1301,12 +1234,10 @@ else:
         ["Student ID", student_id or "Not entered", ""],
         ["Section", course_section or "", ""],
         ["Your baseline weekly revenue", manual_locked["Revenue"].sum(), "USD"],
-        ["Optimized baseline weekly revenue", opt_df["Revenue"].sum(), "USD"],
         ["Saturday capacity-shock room rate", cap["student_price"], "USD"],
         ["Saturday capacity-shock revenue", cap["revenue"], "USD"],
         ["Tuesday demand-shock room rate", dem["student_price"], "USD"],
         ["Tuesday demand-shock revenue", dem["revenue"], "USD"],
-        ["One-price two-segment revenue", seg["common_revenue"], "USD"],
         ["Your segmented-pricing revenue", seg["segmented_revenue"], "USD"],
     ]
     summary_df = pd.DataFrame(summary_rows, columns=["Metric", "Value", "Unit"])
@@ -1318,13 +1249,20 @@ else:
     )
 
     identity_ready = bool(student_name.strip()) and bool(student_id.strip())
+    attempts_used = completed_attempts(student_id) if student_id.strip() else 0
+    attempts_left = max(0, MAX_ATTEMPTS-attempts_used)
     if not identity_ready:
         st.warning("Enter both your name and Student ID in the sidebar before generating the final report.")
+    elif attempts_left <= 0 and st.session_state["lab_pdf_bytes"] is None:
+        st.error("You have used all 3 permitted completed attempts for this lab.")
+    else:
+        st.caption(f"Completed attempts: {attempts_used} of {MAX_ATTEMPTS}. Remaining before this submission: {attempts_left}.")
 
     if st.session_state["lab_pdf_bytes"] is None:
-        if st.button("Generate Verified PDF Report", type="primary", disabled=not identity_ready):
+        if st.button("Generate Verified PDF Report", type="primary", disabled=(not identity_ready or attempts_left<=0)):
             generated_at = datetime.now(ZoneInfo("UTC"))
             verification_code = make_verification_code(student_id, generated_at)
+            attempt_number = record_completed_attempt(student_id)
             pdf_bytes = build_pdf_report(
                 student_name=student_name.strip(),
                 student_id=student_id.strip(),
@@ -1337,6 +1275,8 @@ else:
                 dem=dem,
                 seg=seg,
                 predictions=predictions,
+                benchmarks_visible=reveal_is_unlocked(),
+                attempt_number=attempt_number,
             )
             st.session_state["lab_pdf_bytes"] = pdf_bytes
             st.session_state["lab_pdf_timestamp"] = generated_at.isoformat(timespec="microseconds")
@@ -1361,12 +1301,12 @@ else:
 
         st.caption(
             "The timestamp is fixed when the report is generated; downloading the same report again does not change it. "
-            "To create a new timestamp/code, reset the lab and complete a new run."
+            "Generating another verified report after starting over counts as another attempt. Maximum: 3 completed attempts."
         )
 
 st.divider()
 st.caption(
     "The lab uses the module's logit price-response model in a hotel revenue-management setting. "
     "Students should solve each pricing problem independently, use the sliders to enter and test decisions, "
-    "and then compare the locked decision with the optimization benchmark."
+    "and lock each decision. Benchmarks remain hidden until November 5, 2026."
 )
