@@ -212,6 +212,86 @@ def reset_lab():
 
 
 # -----------------------------
+# Grading helpers
+# -----------------------------
+
+def performance_points(student_value, benchmark_value, max_points):
+    """Award broad-band credit for a numerical pricing solution."""
+    if benchmark_value <= 0:
+        return 0.0
+    ratio = float(student_value) / float(benchmark_value)
+    if ratio >= 0.98:
+        factor = 1.00
+    elif ratio >= 0.95:
+        factor = 0.90
+    elif ratio >= 0.90:
+        factor = 0.75
+    elif ratio >= 0.80:
+        factor = 0.50
+    else:
+        factor = 0.25
+    return round(max_points * factor, 2)
+
+
+def calculate_lab_score(manual_locked, opt_df, cap, dem, seg, predictions, final_interpretation):
+    """Return the 10-point grading breakdown for the completed lab."""
+    # Stage 1 conceptual prediction is graded against the model-generated top three days.
+    expected_stage1_days = set(opt_df.sort_values("Price", ascending=False).head(3)["Day"].tolist())
+    chosen_stage1_days = {d.strip() for d in predictions["stage1_high_days"].split(",")}
+    stage1_prediction = 1.0 if chosen_stage1_days == expected_stage1_days else 0.0
+    stage1_solution = performance_points(manual_locked["Revenue"].sum(), opt_df["Revenue"].sum(), 1.5)
+
+    sat = BASELINE[BASELINE["Day"] == "Saturday"].iloc[0]
+    baseline_sat = optimize_day(sat["D"], sat["a"], sat["b"], BASE_CAPACITY, BASE_COST)
+    shocked_sat = optimize_day(sat["D"], sat["a"], sat["b"], 90.0, BASE_COST)
+    cap_direction = (
+        "Increase" if shocked_sat["price"] > baseline_sat["price"] + 0.01
+        else "Decrease" if shocked_sat["price"] < baseline_sat["price"] - 0.01
+        else "Remain approximately unchanged"
+    )
+    capacity_prediction = 1.0 if predictions["stage3_direction"] == cap_direction else 0.0
+    capacity_solution = performance_points(cap["revenue"], shocked_sat["revenue"], 1.5)
+
+    tue = BASELINE[BASELINE["Day"] == "Tuesday"].iloc[0]
+    baseline_tue = optimize_day(tue["D"], tue["a"], tue["b"], BASE_CAPACITY, BASE_COST)
+    shocked_tue = optimize_day(230.0, tue["a"], tue["b"], BASE_CAPACITY, BASE_COST)
+    demand_direction = (
+        "Increase" if shocked_tue["price"] > baseline_tue["price"] + 0.01
+        else "Decrease" if shocked_tue["price"] < baseline_tue["price"] - 0.01
+        else "Remain approximately unchanged"
+    )
+    demand_prediction = 1.0 if predictions["stage4_direction"] == demand_direction else 0.0
+    demand_solution = performance_points(dem["revenue"], shocked_tue["revenue"], 1.5)
+
+    sensitivity_ok = predictions["stage5_sensitive_segment"] == "Segment B - Leisure"
+    relationship = (
+        "Price A > Price B" if seg["optimized_A_price"] > seg["optimized_B_price"] + 0.01
+        else "Price A < Price B" if seg["optimized_A_price"] < seg["optimized_B_price"] - 0.01
+        else "Price A = Price B"
+    )
+    relationship_ok = predictions["stage5_price_relationship"] == relationship
+    segmentation_concepts = 0.5 * int(sensitivity_ok) + 0.5 * int(relationship_ok)
+    segmentation_solution = performance_points(seg["segmented_revenue"], seg["optimized_revenue"], 1.0)
+
+    correct_interpretation = (
+        "Optimal prices depend on demand, capacity, price sensitivity, and market conditions."
+    )
+    interpretation_points = 0.5 if final_interpretation == correct_interpretation else 0.0
+
+    breakdown = {
+        "Weekly pricing prediction": stage1_prediction,
+        "Weekly pricing solution": stage1_solution,
+        "Capacity-shock prediction": capacity_prediction,
+        "Capacity-shock solution": capacity_solution,
+        "Demand-shock prediction": demand_prediction,
+        "Demand-shock solution": demand_solution,
+        "Segmentation concepts": round(segmentation_concepts, 2),
+        "Segmented-pricing solution": segmentation_solution,
+        "Managerial interpretation": interpretation_points,
+    }
+    return breakdown, round(sum(breakdown.values()), 2)
+
+# -----------------------------
 # PDF report generation
 # -----------------------------
 
@@ -225,7 +305,7 @@ def make_verification_code(student_id, generated_at):
 
 
 def build_pdf_report(student_name, student_id, course_section, generated_at, verification_code,
-                     manual_locked, opt_df, cap, dem, seg, predictions):
+                     manual_locked, opt_df, cap, dem, seg, predictions, score_breakdown, total_score, final_interpretation):
     """Build the student's pricing lab report entirely in memory."""
     buffer = io.BytesIO()
 
@@ -441,7 +521,20 @@ def build_pdf_report(student_name, student_id, course_section, generated_at, ver
     ]
     story.append(styled_table(seg_rows, [2.0*inch, 1.35*inch, 1.35*inch, 1.35*inch]))
 
-    story.append(Spacer(1, 18))
+    story.append(Spacer(1, 10))
+    story.append(Paragraph("Grading Summary", styles["Section"]))
+    score_rows = [["Graded Component", "Points"]]
+    for component, points in score_breakdown.items():
+        score_rows.append([component, f"{points:.2f}"])
+    score_rows.append(["TOTAL", f"{total_score:.2f} / 10.00"])
+    story.append(styled_table(score_rows, [4.5*inch, 1.25*inch]))
+    story.append(Spacer(1, 5))
+    story.append(Paragraph(
+        f"Final managerial interpretation: <b>{final_interpretation}</b>",
+        styles["BodySmall"],
+    ))
+
+    story.append(Spacer(1, 12))
     story.append(Paragraph(
         "Submission verification", styles["Section"]
     ))
@@ -546,7 +639,8 @@ with st.sidebar:
         3. Predict + test a capacity shock  
         4. Predict + test a demand shock  
         5. Predict + test segmented pricing  
-        6. Download verified results
+        6. Interpret your results  
+        7. Download verified results
         """
     )
     st.divider()
@@ -1136,99 +1230,151 @@ else:
                 )
 
 # -----------------------------
-# Stage 6: Report
+# Stage 6: Interpretation and Report
 # -----------------------------
 
-st.header("Stage 6 · Generate Your Verified Pricing Lab Report")
+st.header("Stage 6 · Interpret Your Results and Generate the Verified Report")
 
 if not st.session_state["lab_stage5_revealed"]:
-    st.warning("Complete all prior stages before generating your report.")
+    st.warning("Complete all prior stages before completing the final interpretation.")
 else:
-    opt_df = variable_optimum()
-    manual_locked = st.session_state["lab_manual_schedule"]
-    cap = st.session_state["lab_capacity_shock"]
-    dem = st.session_state["lab_demand_shock"]
-    seg = st.session_state["lab_segment_result"]
-    predictions = {
-        "stage1_high_days": st.session_state["lab_stage1_prediction"],
-        "stage3_direction": st.session_state["lab_stage3_direction"],
-        "stage3_predicted_price": st.session_state["lab_stage3_predicted_price"],
-        "stage4_direction": st.session_state["lab_stage4_direction"],
-        "stage4_predicted_price": st.session_state["lab_stage4_predicted_price"],
-        "stage5_sensitive_segment": st.session_state["lab_stage5_sensitive_segment"],
-        "stage5_price_relationship": st.session_state["lab_stage5_price_relationship"],
-    }
-
-    summary_rows = [
-        ["Student", student_name or "Not entered", ""],
-        ["Student ID", student_id or "Not entered", ""],
-        ["Section", course_section or "", ""],
-        ["Your baseline weekly revenue", manual_locked["Revenue"].sum(), "USD"],
-        ["Optimized baseline weekly revenue", opt_df["Revenue"].sum(), "USD"],
-        ["Saturday capacity-shock room rate", cap["student_price"], "USD"],
-        ["Saturday capacity-shock revenue", cap["revenue"], "USD"],
-        ["Tuesday demand-shock room rate", dem["student_price"], "USD"],
-        ["Tuesday demand-shock revenue", dem["revenue"], "USD"],
-        ["One-price segmented scenario revenue", seg["common_revenue"], "USD"],
-        ["Your segmented-pricing revenue", seg["segmented_revenue"], "USD"],
-    ]
-    summary_df = pd.DataFrame(summary_rows, columns=["Metric", "Value", "Unit"])
-    render_styled_table(summary_df, first_col_left=True)
-
-    st.info(
-        "The final PDF records the exact server generation time in U.S. Eastern Time and UTC. "
-        "It also creates a verification code from the Student ID and exact timestamp."
+    st.markdown(
+        "Before generating the report, select the statement that best summarizes what the pricing experiments demonstrated."
     )
+    interpretation_options = [
+        "The highest feasible price should generally be used whenever capacity is limited.",
+        "Optimal prices depend on demand, capacity, price sensitivity, and market conditions.",
+        "A single price is generally optimal because segmentation only redistributes demand.",
+        "Once an optimal price is found, it should remain unchanged unless operating cost changes.",
+    ]
 
-    identity_ready = bool(student_name.strip()) and bool(student_id.strip())
-    if not identity_ready:
-        st.warning("Enter both your name and Student ID in the sidebar before generating the final report.")
-
-    if st.session_state["lab_pdf_bytes"] is None:
-        if st.button("Generate Verified PDF Report", type="primary", disabled=not identity_ready):
-            generated_at = datetime.now(ZoneInfo("UTC"))
-            verification_code = make_verification_code(student_id, generated_at)
-            pdf_bytes = build_pdf_report(
-                student_name=student_name.strip(),
-                student_id=student_id.strip(),
-                course_section=course_section.strip(),
-                generated_at=generated_at,
-                verification_code=verification_code,
-                manual_locked=manual_locked,
-                opt_df=opt_df,
-                cap=cap,
-                dem=dem,
-                seg=seg,
-                predictions=predictions,
-            )
-            st.session_state["lab_pdf_bytes"] = pdf_bytes
-            st.session_state["lab_pdf_timestamp"] = generated_at.isoformat(timespec="microseconds")
-            st.session_state["lab_verification_code"] = verification_code
+    if not st.session_state["lab_final_interpretation_locked"]:
+        final_interpretation = st.radio(
+            "Which statement best describes the role of price optimization?",
+            interpretation_options,
+            index=None,
+            key="lab_final_interpretation_widget",
+        )
+        if st.button(
+            "Submit Final Interpretation",
+            type="primary",
+            disabled=final_interpretation is None,
+        ):
+            st.session_state["lab_final_interpretation"] = final_interpretation
+            st.session_state["lab_final_interpretation_locked"] = True
             st.rerun()
     else:
-        generated_at = datetime.fromisoformat(st.session_state["lab_pdf_timestamp"])
-        generated_eastern = generated_at.astimezone(EASTERN_TZ)
-        st.success(
-            f"Verified report generated at {generated_eastern.strftime('%Y-%m-%d %H:%M:%S.%f %Z')}. "
-            f"Verification code: {st.session_state['lab_verification_code']}"
+        st.success(f"Final interpretation recorded: {st.session_state['lab_final_interpretation']}")
+
+    if st.session_state["lab_final_interpretation_locked"]:
+        opt_df = variable_optimum()
+        manual_locked = st.session_state["lab_manual_schedule"]
+        cap = st.session_state["lab_capacity_shock"]
+        dem = st.session_state["lab_demand_shock"]
+        seg = st.session_state["lab_segment_result"]
+        predictions = {
+            "stage1_high_days": st.session_state["lab_stage1_prediction"],
+            "stage3_direction": st.session_state["lab_stage3_direction"],
+            "stage3_predicted_price": st.session_state["lab_stage3_predicted_price"],
+            "stage4_direction": st.session_state["lab_stage4_direction"],
+            "stage4_predicted_price": st.session_state["lab_stage4_predicted_price"],
+            "stage5_sensitive_segment": st.session_state["lab_stage5_sensitive_segment"],
+            "stage5_price_relationship": st.session_state["lab_stage5_price_relationship"],
+        }
+        score_breakdown, total_score = calculate_lab_score(
+            manual_locked, opt_df, cap, dem, seg, predictions,
+            st.session_state["lab_final_interpretation"],
         )
 
-        filename_name = student_name.strip().replace(" ", "_") if student_name.strip() else "student"
-        st.download_button(
-            "Download Verified Pricing Lab PDF",
-            data=st.session_state["lab_pdf_bytes"],
-            file_name=f"{filename_name}_pricing_lab_verified.pdf",
-            mime="application/pdf",
-            type="primary",
+        st.subheader("Grading Summary")
+        score_df = pd.DataFrame(
+            [[component, points] for component, points in score_breakdown.items()]
+            + [["TOTAL", total_score]],
+            columns=["Graded Component", "Points"],
         )
-
+        render_styled_table(score_df, formats={"Points": "{:.2f}"}, first_col_left=True)
+        st.metric("Pricing Lab Score", f"{total_score:.2f} / 10.00")
         st.caption(
-            "The timestamp is fixed when the report is generated; downloading the same report again does not change it. "
-            "To create a new timestamp/code, reset the lab and complete a new run."
+            "Numerical pricing solutions receive broad-band credit based on revenue relative to the "
+            "optimization benchmark: at least 98% = full credit; 95-97.99% = 90%; "
+            "90-94.99% = 75%; 80-89.99% = 50%; below 80% = 25%."
         )
+
+        summary_rows = [
+            ["Student", student_name or "Not entered", ""],
+            ["Student ID", student_id or "Not entered", ""],
+            ["Section", course_section or "", ""],
+            ["Your baseline weekly revenue", manual_locked["Revenue"].sum(), "USD"],
+            ["Optimized baseline weekly revenue", opt_df["Revenue"].sum(), "USD"],
+            ["Saturday capacity-shock room rate", cap["student_price"], "USD"],
+            ["Saturday capacity-shock revenue", cap["revenue"], "USD"],
+            ["Tuesday demand-shock room rate", dem["student_price"], "USD"],
+            ["Tuesday demand-shock revenue", dem["revenue"], "USD"],
+            ["One-price segmented scenario revenue", seg["common_revenue"], "USD"],
+            ["Your segmented-pricing revenue", seg["segmented_revenue"], "USD"],
+        ]
+        summary_df = pd.DataFrame(summary_rows, columns=["Metric", "Value", "Unit"])
+        render_styled_table(summary_df, first_col_left=True)
+
+        st.info(
+            "Submit the verified PDF and the Excel workbook containing the analysis used to support "
+            "your pricing decisions. The PDF records the exact server generation time in U.S. Eastern "
+            "Time and UTC and creates a verification code from the Student ID and exact timestamp."
+        )
+
+        identity_ready = bool(student_name.strip()) and bool(student_id.strip())
+        if not identity_ready:
+            st.warning("Enter both your name and Student ID in the sidebar before generating the final report.")
+
+        if st.session_state["lab_pdf_bytes"] is None:
+            if st.button("Generate Verified PDF Report", type="primary", disabled=not identity_ready):
+                generated_at = datetime.now(ZoneInfo("UTC"))
+                verification_code = make_verification_code(student_id, generated_at)
+                pdf_bytes = build_pdf_report(
+                    student_name=student_name.strip(),
+                    student_id=student_id.strip(),
+                    course_section=course_section.strip(),
+                    generated_at=generated_at,
+                    verification_code=verification_code,
+                    manual_locked=manual_locked,
+                    opt_df=opt_df,
+                    cap=cap,
+                    dem=dem,
+                    seg=seg,
+                    predictions=predictions,
+                    score_breakdown=score_breakdown,
+                    total_score=total_score,
+                    final_interpretation=st.session_state["lab_final_interpretation"],
+                )
+                st.session_state["lab_pdf_bytes"] = pdf_bytes
+                st.session_state["lab_pdf_timestamp"] = generated_at.isoformat(timespec="microseconds")
+                st.session_state["lab_verification_code"] = verification_code
+                st.rerun()
+        else:
+            generated_at = datetime.fromisoformat(st.session_state["lab_pdf_timestamp"])
+            generated_eastern = generated_at.astimezone(EASTERN_TZ)
+            st.success(
+                f"Verified report generated at {generated_eastern.strftime('%Y-%m-%d %H:%M:%S.%f %Z')}. "
+                f"Verification code: {st.session_state['lab_verification_code']}"
+            )
+
+            filename_name = student_name.strip().replace(" ", "_") if student_name.strip() else "student"
+            st.download_button(
+                "Download Verified Pricing Lab PDF",
+                data=st.session_state["lab_pdf_bytes"],
+                file_name=f"{filename_name}_pricing_lab_verified.pdf",
+                mime="application/pdf",
+                type="primary",
+            )
+
+            st.caption(
+                "The timestamp is fixed when the report is generated; downloading the same report again does not change it. "
+                "To create a new timestamp/code, reset the lab and complete a new run."
+            )
 
 st.divider()
 st.caption(
-    "The lab uses the module's logit price-response model in a hotel revenue-management setting with data that are different from the graded theme-park assignment. "
-    "The purpose is to require a conceptual prediction before each pricing experiment, then compare the student's decision with an optimization benchmark."
+    "The lab uses the module's logit price-response model in a hotel revenue-management setting. "
+    "Students should solve each pricing problem independently, use the sliders to enter and test decisions, "
+    "and then compare the locked decision with the optimization benchmark."
 )
