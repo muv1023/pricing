@@ -217,6 +217,11 @@ def reset_lab():
 
 EASTERN_TZ = ZoneInfo("America/New_York")
 REVEAL_UNLOCK = datetime(2026, 11, 5, 0, 0, 0, tzinfo=EASTERN_TZ)
+
+def reveal_is_unlocked():
+    """Return True once the benchmark reveal date has been reached in U.S. Eastern Time."""
+    return datetime.now(EASTERN_TZ) >= REVEAL_UNLOCK
+
 def make_verification_code(student_name, generated_at):
     """Create a short report fingerprint from student name + exact timestamp."""
     payload = f"{student_name.strip()}|{generated_at.isoformat(timespec='microseconds')}"
