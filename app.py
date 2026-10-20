@@ -573,7 +573,7 @@ Recommended Solver setup:
 - **Solving Method:** **GRG Nonlinear**.
 - Use positive starting values (for example, $p=150$ and $x=50$) rather than starting both decision variables at zero.
 
-For the segmented-pricing stage, optimize the **Business** and **Leisure** prices directly. Each segment has its own demand curve and a maximum price of $300; the shared 120-room capacity constraint is not used in that stage.
+For the segmented-pricing stage, optimize the **Business** and **Leisure** prices directly. Each segment has its own demand curve, both prices are bounded by $300, and the **combined Business + Leisure demand cannot exceed the hotel's 120-room capacity**.
         """
     )
 
@@ -919,9 +919,10 @@ if not st.session_state["lab_stage3_revealed"]:
 else:
     st.markdown(
         """
-        **New market information:** A major convention is scheduled near the hotel on Tuesday.  
-        For this lab, Tuesday's market-size parameter increases from **D = 160 to D = 230**.  
-        The other Tuesday demand parameters remain unchanged.
+        **New Scenario — Return to Baseline Conditions**  
+        The temporary Saturday maintenance issue from Stage 3 has been resolved. **Hotel capacity is again 120 rooms each night.**  
+
+        A major convention is now scheduled near the hotel on Tuesday. For this scenario, Tuesday's market-size parameter increases from **D = 160 to D = 230**. The other Tuesday demand parameters remain unchanged, and all other days remain at their original baseline conditions.
         """
     )
 
@@ -1037,14 +1038,18 @@ st.header("Stage 5 · Segmented Pricing: Predict Before You Price")
 if not st.session_state["lab_stage4_revealed"]:
     st.warning("Complete Stage 4 first.")
 else:
-    st.write(
-        "The hotel now considers two customer segments with different price sensitivities. "
-        "For this stage, each segment has its own price-response curve. Optimize the Business and "
-        "Leisure prices directly; do **not** apply the 120-room shared-capacity constraint from the earlier stages."
+    st.markdown(
+        """
+        **New Scenario — Segmented Pricing**  
+        The capacity and demand shocks from Stages 3 and 4 no longer apply. The hotel again has its normal **120-room capacity**.
+
+        The hotel now considers two customer segments with different price sensitivities. Business and Leisure customers may be charged different room rates, but their **combined expected demand cannot exceed 120 rooms**.
+        """
     )
 
     seg_A = {"D": 110.0, "a": 4.2, "b": -0.018}
     seg_B = {"D": 180.0, "a": 4.0, "b": -0.030}
+    shared_capacity = 120.0
 
     render_styled_table(
         pd.DataFrame([
@@ -1099,41 +1104,45 @@ else:
             f"expected relationship = {st.session_state['lab_stage5_price_relationship']}."
         )
         st.info(
-            "Solve the one-price and segmented-pricing problems independently. Excel Solver is recommended. "
-            "For segmented pricing, use Business Price and Leisure Price as the decision variables, maximize "
-            "total segment revenue, and constrain each price to be between $0 and $300."
+            "Solve the pricing problem independently. Excel Solver is recommended. Use Business Price and "
+            "Leisure Price as the decision variables; maximize total revenue; constrain Business Demand + "
+            "Leisure Demand to be no more than 120 rooms; constrain each price to $0–$300; and use GRG Nonlinear."
         )
 
         s1, s2, s3 = st.columns(3)
         with s1:
             common_p = st.slider(
                 "One room rate for everyone",
-                0.0, 300.0, 150.0, 0.01,
+                0.0, 300.0, 175.0, 0.01,
                 key="seg_common",
                 disabled=st.session_state["lab_stage5_locked"],
             )
         with s2:
             pA = st.slider(
                 "Business segment room rate",
-                0.0, 300.0, 175.0, 0.01,
+                0.0, 300.0, 225.0, 0.01,
                 key="seg_A",
                 disabled=st.session_state["lab_stage5_locked"],
             )
         with s3:
             pB = st.slider(
                 "Leisure segment room rate",
-                0.0, 300.0, 125.0, 0.01,
+                0.0, 300.0, 155.0, 0.01,
                 key="seg_B",
                 disabled=st.session_state["lab_stage5_locked"],
             )
 
         qA_c = float(logit_demand(common_p, **seg_A))
         qB_c = float(logit_demand(common_p, **seg_B))
-        common_rev = common_p * (qA_c + qB_c)
+        common_total_demand = qA_c + qB_c
+        common_feasible = common_total_demand <= shared_capacity + 1e-9
+        common_rev = common_p * common_total_demand if common_feasible else np.nan
 
         qA = float(logit_demand(pA, **seg_A))
         qB = float(logit_demand(pB, **seg_B))
-        seg_rev = pA * qA + pB * qB
+        total_seg_demand = qA + qB
+        segmented_feasible = total_seg_demand <= shared_capacity + 1e-9
+        seg_rev = pA * qA + pB * qB if segmented_feasible else np.nan
 
         compare_seg = pd.DataFrame(
             {
@@ -1142,6 +1151,8 @@ else:
                 "Leisure Price": [common_p, pB],
                 "Business Demand": [qA_c, qA],
                 "Leisure Demand": [qB_c, qB],
+                "Total Demand": [common_total_demand, total_seg_demand],
+                "Capacity Feasible?": ["Yes" if common_feasible else "No", "Yes" if segmented_feasible else "No"],
                 "Revenue": [common_rev, seg_rev],
             }
         )
@@ -1150,21 +1161,36 @@ else:
             formats={
                 "Business Price": "${:,.2f}",
                 "Leisure Price": "${:,.2f}",
-                "Business Demand": "{:,.1f}",
-                "Leisure Demand": "{:,.1f}",
+                "Business Demand": "{:,.2f}",
+                "Leisure Demand": "{:,.2f}",
+                "Total Demand": "{:,.2f}",
                 "Revenue": "${:,.2f}",
             },
         )
 
+        if not common_feasible or not segmented_feasible:
+            st.warning(
+                "A pricing strategy is infeasible when expected Business + Leisure demand exceeds the "
+                "120-room capacity. Increase one or both prices until the capacity constraint is satisfied."
+            )
+
         if not st.session_state["lab_stage5_locked"]:
-            if st.button("Lock My Segmented Pricing Decisions", type="primary"):
+            if st.button(
+                "Lock My Segmented Pricing Decisions",
+                type="primary",
+                disabled=(not common_feasible or not segmented_feasible),
+            ):
                 st.session_state["lab_stage5_locked"] = True
                 st.session_state["lab_segment_result"] = {
                     "common_price": common_p,
-                    "common_revenue": common_rev,
+                    "common_revenue": float(common_rev),
+                    "common_total_demand": common_total_demand,
                     "segment_A_price": pA,
                     "segment_B_price": pB,
-                    "segmented_revenue": seg_rev,
+                    "segment_A_demand": qA,
+                    "segment_B_demand": qB,
+                    "total_segment_demand": total_seg_demand,
+                    "segmented_revenue": float(seg_rev),
                 }
                 st.rerun()
         else:
@@ -1172,25 +1198,50 @@ else:
 
             if not st.session_state["lab_stage5_revealed"]:
                 if st.button("Reveal Optimized Segmented Pricing"):
-                    grid = np.arange(PRICE_MIN, PRICE_MAX + PRICE_STEP, PRICE_STEP)
+                    grid = np.arange(PRICE_MIN, PRICE_MAX + PRICE_STEP / 2, PRICE_STEP)
 
-                    common_revenues = np.array([
-                        p * (float(logit_demand(p, **seg_A)) + float(logit_demand(p, **seg_B)))
-                        for p in grid
-                    ])
-                    common_idx = int(np.argmax(common_revenues))
-                    best_common_price = float(grid[common_idx])
-                    best_common_revenue = float(common_revenues[common_idx])
+                    # Common-price benchmark subject to total expected demand <= 120.
+                    best_common = None
+                    for p in grid:
+                        qa = float(logit_demand(p, **seg_A))
+                        qb = float(logit_demand(p, **seg_B))
+                        total = qa + qb
+                        if total <= shared_capacity + 1e-9:
+                            rev = p * total
+                            if best_common is None or rev > best_common["revenue"]:
+                                best_common = {"price": float(p), "demand": total, "revenue": float(rev)}
 
-                    opt_A = optimize_day(seg_A["D"], seg_A["a"], seg_A["b"], capacity=1e12, cost=0.0)
-                    opt_B = optimize_day(seg_B["D"], seg_B["a"], seg_B["b"], capacity=1e12, cost=0.0)
-                    best_segmented_revenue = float(opt_A["revenue"] + opt_B["revenue"])
+                    # Segmented benchmark. Capacity binds at the optimum. For each Business price,
+                    # solve the Leisure price that makes q_A + q_B = 120, then retain the best feasible pair.
+                    best_seg = None
+                    for pa in grid:
+                        qa = float(logit_demand(pa, **seg_A))
+                        qb_target = shared_capacity - qa
+                        if qb_target <= 0 or qb_target >= seg_B["D"]:
+                            continue
+                        log_odds = np.log(qb_target / (seg_B["D"] - qb_target))
+                        pb = float((log_odds - seg_B["a"]) / seg_B["b"])
+                        if pb < PRICE_MIN - 1e-9 or pb > PRICE_MAX + 1e-9:
+                            continue
+                        qb = float(logit_demand(pb, **seg_B))
+                        total = qa + qb
+                        if total <= shared_capacity + 1e-6:
+                            rev = pa * qa + pb * qb
+                            if best_seg is None or rev > best_seg["revenue"]:
+                                best_seg = {
+                                    "pA": float(pa), "pB": pb, "qA": qa, "qB": qb,
+                                    "total": total, "revenue": float(rev)
+                                }
 
-                    st.session_state["lab_segment_result"]["optimized_common_price"] = best_common_price
-                    st.session_state["lab_segment_result"]["optimized_common_revenue"] = best_common_revenue
-                    st.session_state["lab_segment_result"]["optimized_A_price"] = opt_A["price"]
-                    st.session_state["lab_segment_result"]["optimized_B_price"] = opt_B["price"]
-                    st.session_state["lab_segment_result"]["optimized_revenue"] = best_segmented_revenue
+                    st.session_state["lab_segment_result"]["optimized_common_price"] = best_common["price"]
+                    st.session_state["lab_segment_result"]["optimized_common_demand"] = best_common["demand"]
+                    st.session_state["lab_segment_result"]["optimized_common_revenue"] = best_common["revenue"]
+                    st.session_state["lab_segment_result"]["optimized_A_price"] = best_seg["pA"]
+                    st.session_state["lab_segment_result"]["optimized_B_price"] = best_seg["pB"]
+                    st.session_state["lab_segment_result"]["optimized_A_demand"] = best_seg["qA"]
+                    st.session_state["lab_segment_result"]["optimized_B_demand"] = best_seg["qB"]
+                    st.session_state["lab_segment_result"]["optimized_total_demand"] = best_seg["total"]
+                    st.session_state["lab_segment_result"]["optimized_revenue"] = best_seg["revenue"]
                     st.session_state["lab_stage5_revealed"] = True
                     st.rerun()
             else:
@@ -1206,16 +1257,19 @@ else:
                     f"Your expected price relationship: **{st.session_state['lab_stage5_price_relationship']}** · "
                     f"Optimized relationship: **{actual_relationship}**  \n"
                     f"Optimized common price: **{money_md(seg['optimized_common_price'], 2)}** · "
+                    f"Total expected demand: **{seg['optimized_common_demand']:.2f}** · "
                     f"Revenue: **{money_md(seg['optimized_common_revenue'], 2)}**  \n"
                     f"Optimized segmented prices: **Business {money_md(seg['optimized_A_price'], 2)}**, "
-                    f"**Leisure {money_md(seg['optimized_B_price'], 2)}** · "
+                    f"**Leisure {money_md(seg['optimized_B_price'], 2)}**  \n"
+                    f"Expected demand: **Business {seg['optimized_A_demand']:.2f} + "
+                    f"Leisure {seg['optimized_B_demand']:.2f} = {seg['optimized_total_demand']:.2f} rooms** · "
                     f"Revenue: **{money_md(seg['optimized_revenue'], 2)}**"
                 )
                 with st.expander("Think About It · Why is the Leisure price lower?"):
                     st.write(
                         "The Leisure segment has the larger absolute price-sensitivity parameter (|b|). Its demand "
-                        "therefore falls more rapidly as price increases. The revenue-maximizing response is a lower "
-                        "price for Leisure customers than for the less price-sensitive Business segment."
+                        "falls more rapidly as price increases, so its revenue-maximizing price is lower. At the "
+                        "same time, the two segment prices must jointly respect the hotel's 120-room capacity."
                     )
 
 # -----------------------------
