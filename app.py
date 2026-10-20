@@ -28,6 +28,22 @@ DAYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Satur
 
 BASELINE = pd.read_csv("data/hotel_parameters.csv")
 
+# Normalize CSV headers so accidental spaces/tabs do not cause KeyError.
+BASELINE.columns = BASELINE.columns.str.strip()
+
+REQUIRED_BASELINE_COLUMNS = {"Day", "D", "a", "b"}
+missing_columns = REQUIRED_BASELINE_COLUMNS - set(BASELINE.columns)
+if missing_columns:
+    st.error(
+        "data/hotel_parameters.csv is missing required columns: "
+        + ", ".join(sorted(missing_columns))
+        + ". Expected columns are: Day, D, a, b."
+    )
+    st.stop()
+
+# Normalize day labels and validate the expected seven-day schedule.
+BASELINE["Day"] = BASELINE["Day"].astype(str).str.strip()
+
 BASE_CAPACITY = 120.0
 BASE_COST = 0.0
 PRICE_MIN = 0.0
@@ -390,7 +406,7 @@ def build_pdf_report(student_name, student_id, course_section, generated_at, ver
     cap_result_rows = [
         ["Scenario", "Student Price", "Expected Demand", "Rooms Sold", "Revenue", "Optimized Price"],
         ["Saturday capacity = 90", fmt_money(cap["student_price"]), fmt_num(cap["expected_demand"]),
-         fmt_num(cap["tickets_sold"]), fmt_money(cap["revenue"]), fmt_money(cap["optimized_price"])],
+         fmt_num(cap["rooms_sold"]), fmt_money(cap["revenue"]), fmt_money(cap["optimized_price"])],
     ]
     story.append(styled_table(cap_result_rows, [1.55*inch, 0.95*inch, 1.0*inch, 0.9*inch, 0.95*inch, 1.0*inch], font_size=7.5))
 
@@ -405,7 +421,7 @@ def build_pdf_report(student_name, student_id, course_section, generated_at, ver
     dem_result_rows = [
         ["Scenario", "Student Price", "Expected Demand", "Rooms Sold", "Revenue", "Optimized Price"],
         ["Tuesday D = 230", fmt_money(dem["student_price"]), fmt_num(dem["expected_demand"]),
-         fmt_num(dem["tickets_sold"]), fmt_money(dem["revenue"]), fmt_money(dem["optimized_price"])],
+         fmt_num(dem["rooms_sold"]), fmt_money(dem["revenue"]), fmt_money(dem["optimized_price"])],
     ]
     story.append(styled_table(dem_result_rows, [1.55*inch, 0.95*inch, 1.0*inch, 0.9*inch, 0.95*inch, 1.0*inch], font_size=7.5))
 
@@ -779,7 +795,7 @@ else:
                 st.session_state["lab_capacity_shock"] = {
                     "student_price": shock_price,
                     "expected_demand": shock_demand,
-                    "tickets_sold": shock_sold,
+                    "rooms_sold": shock_sold,
                     "revenue": shock_rev,
                 }
                 st.rerun()
@@ -787,24 +803,24 @@ else:
             st.success("Your Saturday repricing decision is locked.")
             if not st.session_state["lab_stage3_revealed"]:
                 if st.button("Reveal Optimized Saturday Response"):
-                    sat_opt_700 = optimize_day(sat["D"], sat["a"], sat["b"], 90.0, BASE_COST)
-                    st.session_state["lab_capacity_shock"]["optimized_price"] = sat_opt_700["price"]
-                    st.session_state["lab_capacity_shock"]["optimized_revenue"] = sat_opt_700["revenue"]
+                    sat_opt_90 = optimize_day(sat["D"], sat["a"], sat["b"], 90.0, BASE_COST)
+                    st.session_state["lab_capacity_shock"]["optimized_price"] = sat_opt_90["price"]
+                    st.session_state["lab_capacity_shock"]["optimized_revenue"] = sat_opt_90["revenue"]
                     st.session_state["lab_stage3_revealed"] = True
                     st.rerun()
             else:
-                sat_opt_700 = optimize_day(sat["D"], sat["a"], sat["b"], 90.0, BASE_COST)
+                sat_opt_90 = optimize_day(sat["D"], sat["a"], sat["b"], 90.0, BASE_COST)
                 actual_direction = (
-                    "Increase" if sat_opt_700["price"] > baseline_opt["price"] + 0.01
-                    else "Decrease" if sat_opt_700["price"] < baseline_opt["price"] - 0.01
+                    "Increase" if sat_opt_90["price"] > baseline_opt["price"] + 0.01
+                    else "Decrease" if sat_opt_90["price"] < baseline_opt["price"] - 0.01
                     else "Remain approximately unchanged"
                 )
                 st.info(
                     f"Your prediction: **{st.session_state['lab_stage3_direction']}** · "
                     f"Model result: **{actual_direction}**  \n"
-                    f"Optimized Saturday room rate with capacity 90: **{money_md(sat_opt_700['price'], 2)}** · "
-                    f"Rooms sold: **{sat_opt_700['served']:,.0f}** · "
-                    f"Revenue: **{money_md(sat_opt_700['revenue'])}**"
+                    f"Optimized Saturday room rate with capacity 90: **{money_md(sat_opt_90['price'], 2)}** · "
+                    f"Rooms sold: **{sat_opt_90['served']:,.0f}** · "
+                    f"Revenue: **{money_md(sat_opt_90['revenue'])}**"
                 )
 
 # -----------------------------
@@ -892,7 +908,7 @@ else:
                 st.session_state["lab_demand_shock"] = {
                     "student_price": tue_price,
                     "expected_demand": tue_demand,
-                    "tickets_sold": tue_sold,
+                    "rooms_sold": tue_sold,
                     "revenue": tue_rev,
                 }
                 st.rerun()
@@ -900,24 +916,24 @@ else:
             st.success("Your Tuesday repricing decision is locked.")
             if not st.session_state["lab_stage4_revealed"]:
                 if st.button("Reveal Optimized Tuesday Response"):
-                    tue_opt_1900 = optimize_day(230.0, tue["a"], tue["b"], BASE_CAPACITY, BASE_COST)
-                    st.session_state["lab_demand_shock"]["optimized_price"] = tue_opt_1900["price"]
-                    st.session_state["lab_demand_shock"]["optimized_revenue"] = tue_opt_1900["revenue"]
+                    tue_opt_230 = optimize_day(230.0, tue["a"], tue["b"], BASE_CAPACITY, BASE_COST)
+                    st.session_state["lab_demand_shock"]["optimized_price"] = tue_opt_230["price"]
+                    st.session_state["lab_demand_shock"]["optimized_revenue"] = tue_opt_230["revenue"]
                     st.session_state["lab_stage4_revealed"] = True
                     st.rerun()
             else:
-                tue_opt_1900 = optimize_day(230.0, tue["a"], tue["b"], BASE_CAPACITY, BASE_COST)
+                tue_opt_230 = optimize_day(230.0, tue["a"], tue["b"], BASE_CAPACITY, BASE_COST)
                 actual_direction = (
-                    "Increase" if tue_opt_1900["price"] > original_tue_opt["price"] + 0.01
-                    else "Decrease" if tue_opt_1900["price"] < original_tue_opt["price"] - 0.01
+                    "Increase" if tue_opt_230["price"] > original_tue_opt["price"] + 0.01
+                    else "Decrease" if tue_opt_230["price"] < original_tue_opt["price"] - 0.01
                     else "Remain approximately unchanged"
                 )
                 st.info(
                     f"Your prediction: **{st.session_state['lab_stage4_direction']}** · "
                     f"Model result: **{actual_direction}**  \n"
-                    f"Optimized Tuesday room rate after the demand increase: **{money_md(tue_opt_1900['price'], 2)}** · "
-                    f"Rooms sold: **{tue_opt_1900['served']:,.0f}** · "
-                    f"Revenue: **{money_md(tue_opt_1900['revenue'])}**"
+                    f"Optimized Tuesday room rate after the demand increase: **{money_md(tue_opt_230['price'], 2)}** · "
+                    f"Rooms sold: **{tue_opt_230['served']:,.0f}** · "
+                    f"Revenue: **{money_md(tue_opt_230['revenue'])}**"
                 )
 
 # -----------------------------
