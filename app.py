@@ -48,7 +48,7 @@ BASE_CAPACITY = 120.0
 BASE_COST = 0.0
 PRICE_MIN = 0.0
 PRICE_MAX = 300.0
-PRICE_STEP = 1.0
+PRICE_STEP = 0.01
 
 
 def logit_demand(price, D, a, b):
@@ -212,86 +212,6 @@ def reset_lab():
 
 
 # -----------------------------
-# Grading helpers
-# -----------------------------
-
-def performance_points(student_value, benchmark_value, max_points):
-    """Award broad-band credit for a numerical pricing solution."""
-    if benchmark_value <= 0:
-        return 0.0
-    ratio = float(student_value) / float(benchmark_value)
-    if ratio >= 0.98:
-        factor = 1.00
-    elif ratio >= 0.95:
-        factor = 0.90
-    elif ratio >= 0.90:
-        factor = 0.75
-    elif ratio >= 0.80:
-        factor = 0.50
-    else:
-        factor = 0.25
-    return round(max_points * factor, 2)
-
-
-def calculate_lab_score(manual_locked, opt_df, cap, dem, seg, predictions, final_interpretation):
-    """Return the 10-point grading breakdown for the completed lab."""
-    # Stage 1 conceptual prediction is graded against the model-generated top three days.
-    expected_stage1_days = set(opt_df.sort_values("Price", ascending=False).head(3)["Day"].tolist())
-    chosen_stage1_days = {d.strip() for d in predictions["stage1_high_days"].split(",")}
-    stage1_prediction = 1.0 if chosen_stage1_days == expected_stage1_days else 0.0
-    stage1_solution = performance_points(manual_locked["Revenue"].sum(), opt_df["Revenue"].sum(), 1.5)
-
-    sat = BASELINE[BASELINE["Day"] == "Saturday"].iloc[0]
-    baseline_sat = optimize_day(sat["D"], sat["a"], sat["b"], BASE_CAPACITY, BASE_COST)
-    shocked_sat = optimize_day(sat["D"], sat["a"], sat["b"], 90.0, BASE_COST)
-    cap_direction = (
-        "Increase" if shocked_sat["price"] > baseline_sat["price"] + 0.01
-        else "Decrease" if shocked_sat["price"] < baseline_sat["price"] - 0.01
-        else "Remain approximately unchanged"
-    )
-    capacity_prediction = 1.0 if predictions["stage3_direction"] == cap_direction else 0.0
-    capacity_solution = performance_points(cap["revenue"], shocked_sat["revenue"], 1.5)
-
-    tue = BASELINE[BASELINE["Day"] == "Tuesday"].iloc[0]
-    baseline_tue = optimize_day(tue["D"], tue["a"], tue["b"], BASE_CAPACITY, BASE_COST)
-    shocked_tue = optimize_day(230.0, tue["a"], tue["b"], BASE_CAPACITY, BASE_COST)
-    demand_direction = (
-        "Increase" if shocked_tue["price"] > baseline_tue["price"] + 0.01
-        else "Decrease" if shocked_tue["price"] < baseline_tue["price"] - 0.01
-        else "Remain approximately unchanged"
-    )
-    demand_prediction = 1.0 if predictions["stage4_direction"] == demand_direction else 0.0
-    demand_solution = performance_points(dem["revenue"], shocked_tue["revenue"], 1.5)
-
-    sensitivity_ok = predictions["stage5_sensitive_segment"] == "Segment B - Leisure"
-    relationship = (
-        "Price A > Price B" if seg["optimized_A_price"] > seg["optimized_B_price"] + 0.01
-        else "Price A < Price B" if seg["optimized_A_price"] < seg["optimized_B_price"] - 0.01
-        else "Price A = Price B"
-    )
-    relationship_ok = predictions["stage5_price_relationship"] == relationship
-    segmentation_concepts = 0.5 * int(sensitivity_ok) + 0.5 * int(relationship_ok)
-    segmentation_solution = performance_points(seg["segmented_revenue"], seg["optimized_revenue"], 1.0)
-
-    correct_interpretation = (
-        "Optimal prices depend on demand, capacity, price sensitivity, and market conditions."
-    )
-    interpretation_points = 0.5 if final_interpretation == correct_interpretation else 0.0
-
-    breakdown = {
-        "Weekly pricing prediction": stage1_prediction,
-        "Weekly pricing solution": stage1_solution,
-        "Capacity-shock prediction": capacity_prediction,
-        "Capacity-shock solution": capacity_solution,
-        "Demand-shock prediction": demand_prediction,
-        "Demand-shock solution": demand_solution,
-        "Segmentation concepts": round(segmentation_concepts, 2),
-        "Segmented-pricing solution": segmentation_solution,
-        "Managerial interpretation": interpretation_points,
-    }
-    return breakdown, round(sum(breakdown.values()), 2)
-
-# -----------------------------
 # PDF report generation
 # -----------------------------
 
@@ -305,7 +225,7 @@ def make_verification_code(student_id, generated_at):
 
 
 def build_pdf_report(student_name, student_id, course_section, generated_at, verification_code,
-                     manual_locked, opt_df, cap, dem, seg, predictions, score_breakdown, total_score, final_interpretation):
+                     manual_locked, opt_df, cap, dem, seg, predictions):
     """Build the student's pricing lab report entirely in memory."""
     buffer = io.BytesIO()
 
@@ -514,7 +434,7 @@ def build_pdf_report(student_name, student_id, course_section, generated_at, ver
     story.append(styled_table(seg_pred_rows, [2.8*inch, 2.6*inch]))
     story.append(Spacer(1, 5))
     seg_rows = [
-        ["Strategy", "Segment A Price", "Segment B Price", "Revenue"],
+        ["Strategy", "Business Price", "Leisure Price", "Revenue"],
         ["One common price", fmt_money(seg["common_price"]), fmt_money(seg["common_price"]), fmt_money(seg["common_revenue"])],
         ["Student segmented prices", fmt_money(seg["segment_A_price"]), fmt_money(seg["segment_B_price"]), fmt_money(seg["segmented_revenue"])],
         ["Optimized segmented prices", fmt_money(seg["optimized_A_price"]), fmt_money(seg["optimized_B_price"]), fmt_money(seg["optimized_revenue"])],
@@ -522,15 +442,11 @@ def build_pdf_report(student_name, student_id, course_section, generated_at, ver
     story.append(styled_table(seg_rows, [2.0*inch, 1.35*inch, 1.35*inch, 1.35*inch]))
 
     story.append(Spacer(1, 10))
-    story.append(Paragraph("Grading Summary", styles["Section"]))
-    score_rows = [["Graded Component", "Points"]]
-    for component, points in score_breakdown.items():
-        score_rows.append([component, f"{points:.2f}"])
-    score_rows.append(["TOTAL", f"{total_score:.2f} / 10.00"])
-    story.append(styled_table(score_rows, [4.5*inch, 1.25*inch]))
-    story.append(Spacer(1, 5))
+    story.append(Paragraph("Completion Record", styles["Section"]))
     story.append(Paragraph(
-        f"Final managerial interpretation: <b>{final_interpretation}</b>",
+        "This report documents the student's submitted pricing decisions, pre-analysis predictions, "
+        "and the optimization benchmarks revealed after each decision was locked. Conceptual reflection "
+        "prompts in the lab are learning checks and are not automatically graded.",
         styles["BodySmall"],
     ))
 
@@ -618,11 +534,71 @@ st.markdown(
         Pricing Analytics Decision Lab
       </div>
       <div style="font-size: 17px; margin-top: 8px;">
-        Price the business yourself first. Then benchmark your decisions against optimization.
+        Solve each pricing problem independently, enter and test your decisions, then benchmark them against optimization.
       </div>
     </div>
     """,
     unsafe_allow_html=True,
+)
+
+st.info(
+    "**How to use this lab:** Solve the pricing problems independently before finalizing your answers. "
+    "Excel Solver is recommended. Use the sliders to enter and test your prices, refine them if needed, "
+    "and then lock your decision. The lab will reveal its optimization benchmark only after you commit."
+)
+
+with st.expander("Recommended Excel Solver setup", expanded=False):
+    st.markdown(
+        r"""
+For the weekly hotel-pricing model, use two decision variables for each day:
+
+- **Price (p):** room rate.
+- **Rooms Sold (x):** number of rooms actually sold.
+
+The demand model is
+
+$$Q(p)=D\frac{e^{a+bp}}{1+e^{a+bp}}$$
+
+and the objective is
+
+$$\max \sum_i p_i x_i.$$
+
+Recommended Solver setup:
+
+- **Set Objective:** Total Revenue; choose **Max**.
+- **Changing Variable Cells:** all Price $(p)$ and Rooms Sold $(x)$ cells.
+- **Demand constraint:** $x_i \leq Q_i(p_i)$.
+- **Capacity constraint:** $x_i \leq 120$ for the baseline problem.
+- **Price bound:** $0 \leq p_i \leq 300$.
+- **Solving Method:** **GRG Nonlinear**.
+- Use positive starting values (for example, $p=150$ and $x=50$) rather than starting both decision variables at zero.
+
+For the segmented-pricing stage, optimize the **Business** and **Leisure** prices directly. Each segment has its own demand curve and a maximum price of $300; the shared 120-room capacity constraint is not used in that stage.
+        """
+    )
+
+st.markdown(
+    "### How this assignment will be graded"
+)
+st.markdown(
+    "The Streamlit lab does **not** assign your grade. Submit both the **verified Streamlit PDF** and your "
+    "**Excel Solver workbook**. The Excel file provides evidence of your model formulation and analysis; "
+    "the verified PDF documents your submitted decisions and benchmark comparisons."
+)
+rubric_df = pd.DataFrame(
+    [
+        ["Excel model formulation", "Correct demand, revenue, decision variables, objective, and constraints", "3"],
+        ["Baseline variable-pricing solution", "Solver model is used appropriately and results are entered/tested in the lab", "2"],
+        ["Capacity and demand shocks", "Model is updated appropriately and revised pricing decisions are supported by analysis", "2"],
+        ["Segmented pricing", "Business and Leisure demand functions and price optimization are modeled correctly", "2"],
+        ["Completion and documentation", "Verified PDF and complete Excel workbook are submitted", "1"],
+    ],
+    columns=["Component", "Evidence", "Points"],
+)
+render_styled_table(rubric_df, first_col_left=True)
+st.caption(
+    "Conceptual 'Think About It' questions are included for learning and are not graded. "
+    "Predictions are recorded in the PDF but are not scored automatically."
 )
 
 with st.sidebar:
@@ -639,7 +615,7 @@ with st.sidebar:
         3. Predict + test a capacity shock  
         4. Predict + test a demand shock  
         5. Predict + test segmented pricing  
-        6. Interpret your results  
+        6. Review conceptual takeaways  
         7. Download verified results
         """
     )
@@ -692,12 +668,13 @@ if not st.session_state["lab_stage1_prediction_locked"]:
         st.rerun()
 else:
     st.success(f"Prediction recorded: {st.session_state['lab_stage1_prediction']}")
-    st.caption("The lab will not grade this prediction yet. You will test it through your pricing decisions and the optimizer.")
+    st.caption("Prediction recorded. This is a learning checkpoint and is not graded; you will test it against the optimizer later.")
 
 if st.session_state["lab_stage1_prediction_locked"]:
     st.info(
-        "Now build your weekly pricing strategy. Use the demand parameters and the live dashboard, "
-        "but do not run an optimizer outside the lab before making your decisions."
+        "Now solve the weekly pricing problem independently. Excel Solver is recommended. "
+        "Use the sliders to enter and test the prices supported by your analysis, refine them if needed, "
+        "and lock your final strategy when you are satisfied."
     )
 
     price_cols = st.columns(4)
@@ -709,7 +686,7 @@ if st.session_state["lab_stage1_prediction_locked"]:
                 min_value=0.0,
                 max_value=300.0,
                 value=150.0,
-                step=5.0,
+                step=0.01,
                 key=f"price_{day}",
                 disabled=st.session_state["lab_stage1_locked"],
             )
@@ -804,6 +781,13 @@ else:
             f"Three highest optimized-price days in this model: **{top3}**  \n"
             f"Prediction supported by the model: **{'Yes' if supported else 'No'}**"
         )
+        with st.expander("Think About It · Why are some rooms intentionally left unsold?"):
+            st.write(
+                "On Monday, Tuesday, and Wednesday, the revenue-maximizing solution may leave some rooms unsold "
+                "even though capacity is available. Filling those additional rooms would require lowering the room "
+                "rate enough that the additional volume would not offset the revenue lost from the lower price. "
+                "Maximizing occupancy and maximizing revenue are different objectives."
+            )
 
 # -----------------------------
 # Stage 3
@@ -837,7 +821,7 @@ else:
             min_value=0.0,
             max_value=300.0,
             value=None,
-            step=5.0,
+            step=0.01,
             key="lab_stage3_pred_price_widget",
         )
         if st.button(
@@ -862,7 +846,7 @@ else:
                 0.0,
                 300.0,
                 float(st.session_state["lab_stage3_predicted_price"]),
-                5.0,
+                0.01,
                 key="shock_sat_price",
                 disabled=st.session_state["lab_stage3_locked"],
             )
@@ -917,6 +901,13 @@ else:
                     f"Revenue: **{money_md(sat_opt_90['revenue'])}**"
                 )
 
+                with st.expander("Think About It · Why can lower capacity increase the optimal price?"):
+                    st.write(
+                        "When capacity becomes scarcer, the hotel can serve fewer customers. A higher price can "
+                        "allocate the limited rooms to customers with greater willingness to pay rather than stimulate "
+                        "additional demand that the hotel cannot serve."
+                    )
+
 # -----------------------------
 # Stage 4
 # -----------------------------
@@ -950,7 +941,7 @@ else:
             min_value=0.0,
             max_value=300.0,
             value=None,
-            step=5.0,
+            step=0.01,
             key="lab_stage4_pred_price_widget",
         )
         if st.button(
@@ -975,7 +966,7 @@ else:
                 0.0,
                 300.0,
                 float(st.session_state["lab_stage4_predicted_price"]),
-                5.0,
+                0.01,
                 key="shock_tue_price",
                 disabled=st.session_state["lab_stage4_locked"],
             )
@@ -1030,6 +1021,13 @@ else:
                     f"Revenue: **{money_md(tue_opt_230['revenue'])}**"
                 )
 
+                with st.expander("Think About It · Why can stronger demand increase the optimal price?"):
+                    st.write(
+                        "A larger market means more potential customers are willing to purchase at each price level. "
+                        "With stronger demand, the hotel can often charge a higher price while still selling enough "
+                        "rooms to maximize revenue."
+                    )
+
 # -----------------------------
 # Stage 5
 # -----------------------------
@@ -1040,13 +1038,13 @@ if not st.session_state["lab_stage4_revealed"]:
     st.warning("Complete Stage 4 first.")
 else:
     st.write(
-        "The hotel serves two customer segments with different price sensitivities. "
-        "Both use the logit demand model and share the same 120-room capacity."
+        "The hotel now considers two customer segments with different price sensitivities. "
+        "For this stage, each segment has its own price-response curve. Optimize the Business and "
+        "Leisure prices directly; do **not** apply the 120-room shared-capacity constraint from the earlier stages."
     )
 
     seg_A = {"D": 110.0, "a": 4.2, "b": -0.018}
     seg_B = {"D": 180.0, "a": 4.0, "b": -0.030}
-    shared_capacity = 120.0
 
     render_styled_table(
         pd.DataFrame([
@@ -1055,18 +1053,21 @@ else:
                 "Market Size (D)": seg_A["D"],
                 "Position Parameter (a)": seg_A["a"],
                 "Price Sensitivity (b)": seg_A["b"],
+                "Maximum Price": PRICE_MAX,
             },
             {
                 "Segment": "B - Leisure",
                 "Market Size (D)": seg_B["D"],
                 "Position Parameter (a)": seg_B["a"],
                 "Price Sensitivity (b)": seg_B["b"],
+                "Maximum Price": PRICE_MAX,
             },
         ]),
         formats={
             "Market Size (D)": "{:,.0f}",
             "Position Parameter (a)": "{:.1f}",
             "Price Sensitivity (b)": "{:.3f}",
+            "Maximum Price": "${:,.0f}",
         },
     )
 
@@ -1079,7 +1080,7 @@ else:
         )
         relationship = st.radio(
             "Which segmented-pricing relationship do you expect the model to recommend?",
-            ["Price A > Price B", "Price A < Price B", "Price A = Price B"],
+            ["Business Price > Leisure Price", "Business Price < Leisure Price", "Business Price = Leisure Price"],
             index=None,
             key="lab_stage5_relationship_widget",
         )
@@ -1097,71 +1098,61 @@ else:
             f"Predictions recorded: more price sensitive = {st.session_state['lab_stage5_sensitive_segment']}; "
             f"expected relationship = {st.session_state['lab_stage5_price_relationship']}."
         )
+        st.info(
+            "Solve the one-price and segmented-pricing problems independently. Excel Solver is recommended. "
+            "For segmented pricing, use Business Price and Leisure Price as the decision variables, maximize "
+            "total segment revenue, and constrain each price to be between $0 and $300."
+        )
 
         s1, s2, s3 = st.columns(3)
         with s1:
             common_p = st.slider(
                 "One room rate for everyone",
-                0.0,
-                300.0,
-                150.0,
-                5.0,
+                0.0, 300.0, 150.0, 0.01,
                 key="seg_common",
                 disabled=st.session_state["lab_stage5_locked"],
             )
         with s2:
             pA = st.slider(
                 "Business segment room rate",
-                0.0,
-                300.0,
-                175.0,
-                5.0,
+                0.0, 300.0, 175.0, 0.01,
                 key="seg_A",
                 disabled=st.session_state["lab_stage5_locked"],
             )
         with s3:
             pB = st.slider(
                 "Leisure segment room rate",
-                0.0,
-                300.0,
-                125.0,
-                5.0,
+                0.0, 300.0, 125.0, 0.01,
                 key="seg_B",
                 disabled=st.session_state["lab_stage5_locked"],
             )
 
         qA_c = float(logit_demand(common_p, **seg_A))
         qB_c = float(logit_demand(common_p, **seg_B))
-        total_c = qA_c + qB_c
-        scale_c = min(1.0, shared_capacity / total_c) if total_c > 0 else 0
-        soldA_c = qA_c * scale_c
-        soldB_c = qB_c * scale_c
-        common_rev = common_p * (soldA_c + soldB_c)
+        common_rev = common_p * (qA_c + qB_c)
 
         qA = float(logit_demand(pA, **seg_A))
         qB = float(logit_demand(pB, **seg_B))
-        total = qA + qB
-        scale = min(1.0, shared_capacity / total) if total > 0 else 0
-        soldA = qA * scale
-        soldB = qB * scale
-        seg_rev = pA * soldA + pB * soldB
+        seg_rev = pA * qA + pB * qB
 
         compare_seg = pd.DataFrame(
             {
                 "Strategy": ["One Price", "Segmented Prices"],
-                "Segment A Price": [common_p, pA],
-                "Segment B Price": [common_p, pB],
-                "Rooms Sold": [soldA_c + soldB_c, soldA + soldB],
+                "Business Price": [common_p, pA],
+                "Leisure Price": [common_p, pB],
+                "Business Demand": [qA_c, qA],
+                "Leisure Demand": [qB_c, qB],
                 "Revenue": [common_rev, seg_rev],
             }
         )
         render_styled_table(
             compare_seg,
             formats={
-                "Segment A Price": "${:,.2f}",
-                "Segment B Price": "${:,.2f}",
-                "Rooms Sold": "{:,.0f}",
-                "Revenue": "${:,.0f}",
+                "Business Price": "${:,.2f}",
+                "Leisure Price": "${:,.2f}",
+                "Business Demand": "{:,.1f}",
+                "Leisure Demand": "{:,.1f}",
+                "Revenue": "${:,.2f}",
             },
         )
 
@@ -1181,41 +1172,33 @@ else:
 
             if not st.session_state["lab_stage5_revealed"]:
                 if st.button("Reveal Optimized Segmented Pricing"):
-                    grid = np.arange(0.0, 300.0 + 1.0, 1.0)
-                    best_common = None
-                    for p in grid:
-                        qa = float(logit_demand(p, **seg_A))
-                        qb = float(logit_demand(p, **seg_B))
-                        t = qa + qb
-                        sc = min(1.0, shared_capacity / t) if t > 0 else 0
-                        rev = p * (qa + qb) * sc
-                        if best_common is None or rev > best_common["revenue"]:
-                            best_common = {"price": p, "revenue": rev}
+                    grid = np.arange(PRICE_MIN, PRICE_MAX + PRICE_STEP, PRICE_STEP)
 
-                    best_seg = None
-                    for pa in grid:
-                        qa = float(logit_demand(pa, **seg_A))
-                        for pb in grid:
-                            qb = float(logit_demand(pb, **seg_B))
-                            t = qa + qb
-                            sc = min(1.0, shared_capacity / t) if t > 0 else 0
-                            rev = pa * qa * sc + pb * qb * sc
-                            if best_seg is None or rev > best_seg["revenue"]:
-                                best_seg = {"pA": pa, "pB": pb, "revenue": rev}
+                    common_revenues = np.array([
+                        p * (float(logit_demand(p, **seg_A)) + float(logit_demand(p, **seg_B)))
+                        for p in grid
+                    ])
+                    common_idx = int(np.argmax(common_revenues))
+                    best_common_price = float(grid[common_idx])
+                    best_common_revenue = float(common_revenues[common_idx])
 
-                    st.session_state["lab_segment_result"]["optimized_common_price"] = best_common["price"]
-                    st.session_state["lab_segment_result"]["optimized_common_revenue"] = best_common["revenue"]
-                    st.session_state["lab_segment_result"]["optimized_A_price"] = best_seg["pA"]
-                    st.session_state["lab_segment_result"]["optimized_B_price"] = best_seg["pB"]
-                    st.session_state["lab_segment_result"]["optimized_revenue"] = best_seg["revenue"]
+                    opt_A = optimize_day(seg_A["D"], seg_A["a"], seg_A["b"], capacity=1e12, cost=0.0)
+                    opt_B = optimize_day(seg_B["D"], seg_B["a"], seg_B["b"], capacity=1e12, cost=0.0)
+                    best_segmented_revenue = float(opt_A["revenue"] + opt_B["revenue"])
+
+                    st.session_state["lab_segment_result"]["optimized_common_price"] = best_common_price
+                    st.session_state["lab_segment_result"]["optimized_common_revenue"] = best_common_revenue
+                    st.session_state["lab_segment_result"]["optimized_A_price"] = opt_A["price"]
+                    st.session_state["lab_segment_result"]["optimized_B_price"] = opt_B["price"]
+                    st.session_state["lab_segment_result"]["optimized_revenue"] = best_segmented_revenue
                     st.session_state["lab_stage5_revealed"] = True
                     st.rerun()
             else:
                 seg = st.session_state["lab_segment_result"]
                 actual_relationship = (
-                    "Price A > Price B" if seg["optimized_A_price"] > seg["optimized_B_price"] + 0.01
-                    else "Price A < Price B" if seg["optimized_A_price"] < seg["optimized_B_price"] - 0.01
-                    else "Price A = Price B"
+                    "Business Price > Leisure Price" if seg["optimized_A_price"] > seg["optimized_B_price"] + 0.01
+                    else "Business Price < Leisure Price" if seg["optimized_A_price"] < seg["optimized_B_price"] - 0.01
+                    else "Business Price = Leisure Price"
                 )
                 st.info(
                     f"Your price-sensitivity prediction: **{st.session_state['lab_stage5_sensitive_segment']}** · "
@@ -1223,154 +1206,109 @@ else:
                     f"Your expected price relationship: **{st.session_state['lab_stage5_price_relationship']}** · "
                     f"Optimized relationship: **{actual_relationship}**  \n"
                     f"Optimized common price: **{money_md(seg['optimized_common_price'], 2)}** · "
-                    f"Revenue: **{money_md(seg['optimized_common_revenue'])}**  \n"
-                    f"Optimized segmented prices: **A {money_md(seg['optimized_A_price'], 2)}**, "
-                    f"**B {money_md(seg['optimized_B_price'], 2)}** · "
-                    f"Revenue: **{money_md(seg['optimized_revenue'])}**"
+                    f"Revenue: **{money_md(seg['optimized_common_revenue'], 2)}**  \n"
+                    f"Optimized segmented prices: **Business {money_md(seg['optimized_A_price'], 2)}**, "
+                    f"**Leisure {money_md(seg['optimized_B_price'], 2)}** · "
+                    f"Revenue: **{money_md(seg['optimized_revenue'], 2)}**"
                 )
+                with st.expander("Think About It · Why is the Leisure price lower?"):
+                    st.write(
+                        "The Leisure segment has the larger absolute price-sensitivity parameter (|b|). Its demand "
+                        "therefore falls more rapidly as price increases. The revenue-maximizing response is a lower "
+                        "price for Leisure customers than for the less price-sensitive Business segment."
+                    )
 
 # -----------------------------
-# Stage 6: Interpretation and Report
+# Stage 6: Report
 # -----------------------------
 
-st.header("Stage 6 · Interpret Your Results and Generate the Verified Report")
+st.header("Stage 6 · Generate Your Verified Pricing Lab Report")
 
 if not st.session_state["lab_stage5_revealed"]:
-    st.warning("Complete all prior stages before completing the final interpretation.")
+    st.warning("Complete all prior stages before generating your report.")
 else:
-    st.markdown(
-        "Before generating the report, select the statement that best summarizes what the pricing experiments demonstrated."
-    )
-    interpretation_options = [
-        "The highest feasible price should generally be used whenever capacity is limited.",
-        "Optimal prices depend on demand, capacity, price sensitivity, and market conditions.",
-        "A single price is generally optimal because segmentation only redistributes demand.",
-        "Once an optimal price is found, it should remain unchanged unless operating cost changes.",
-    ]
+    opt_df = variable_optimum()
+    manual_locked = st.session_state["lab_manual_schedule"]
+    cap = st.session_state["lab_capacity_shock"]
+    dem = st.session_state["lab_demand_shock"]
+    seg = st.session_state["lab_segment_result"]
+    predictions = {
+        "stage1_high_days": st.session_state["lab_stage1_prediction"],
+        "stage3_direction": st.session_state["lab_stage3_direction"],
+        "stage3_predicted_price": st.session_state["lab_stage3_predicted_price"],
+        "stage4_direction": st.session_state["lab_stage4_direction"],
+        "stage4_predicted_price": st.session_state["lab_stage4_predicted_price"],
+        "stage5_sensitive_segment": st.session_state["lab_stage5_sensitive_segment"],
+        "stage5_price_relationship": st.session_state["lab_stage5_price_relationship"],
+    }
 
-    if not st.session_state["lab_final_interpretation_locked"]:
-        final_interpretation = st.radio(
-            "Which statement best describes the role of price optimization?",
-            interpretation_options,
-            index=None,
-            key="lab_final_interpretation_widget",
-        )
-        if st.button(
-            "Submit Final Interpretation",
-            type="primary",
-            disabled=final_interpretation is None,
-        ):
-            st.session_state["lab_final_interpretation"] = final_interpretation
-            st.session_state["lab_final_interpretation_locked"] = True
+    summary_rows = [
+        ["Student", student_name or "Not entered", ""],
+        ["Student ID", student_id or "Not entered", ""],
+        ["Section", course_section or "", ""],
+        ["Your baseline weekly revenue", manual_locked["Revenue"].sum(), "USD"],
+        ["Optimized baseline weekly revenue", opt_df["Revenue"].sum(), "USD"],
+        ["Saturday capacity-shock room rate", cap["student_price"], "USD"],
+        ["Saturday capacity-shock revenue", cap["revenue"], "USD"],
+        ["Tuesday demand-shock room rate", dem["student_price"], "USD"],
+        ["Tuesday demand-shock revenue", dem["revenue"], "USD"],
+        ["One-price two-segment revenue", seg["common_revenue"], "USD"],
+        ["Your segmented-pricing revenue", seg["segmented_revenue"], "USD"],
+    ]
+    summary_df = pd.DataFrame(summary_rows, columns=["Metric", "Value", "Unit"])
+    render_styled_table(summary_df, first_col_left=True)
+
+    st.info(
+        "The lab does not calculate your assignment grade. Submit the verified PDF and your Excel Solver "
+        "workbook. Your grade will be based on the rubric shown at the beginning of the lab."
+    )
+
+    identity_ready = bool(student_name.strip()) and bool(student_id.strip())
+    if not identity_ready:
+        st.warning("Enter both your name and Student ID in the sidebar before generating the final report.")
+
+    if st.session_state["lab_pdf_bytes"] is None:
+        if st.button("Generate Verified PDF Report", type="primary", disabled=not identity_ready):
+            generated_at = datetime.now(ZoneInfo("UTC"))
+            verification_code = make_verification_code(student_id, generated_at)
+            pdf_bytes = build_pdf_report(
+                student_name=student_name.strip(),
+                student_id=student_id.strip(),
+                course_section=course_section.strip(),
+                generated_at=generated_at,
+                verification_code=verification_code,
+                manual_locked=manual_locked,
+                opt_df=opt_df,
+                cap=cap,
+                dem=dem,
+                seg=seg,
+                predictions=predictions,
+            )
+            st.session_state["lab_pdf_bytes"] = pdf_bytes
+            st.session_state["lab_pdf_timestamp"] = generated_at.isoformat(timespec="microseconds")
+            st.session_state["lab_verification_code"] = verification_code
             st.rerun()
     else:
-        st.success(f"Final interpretation recorded: {st.session_state['lab_final_interpretation']}")
-
-    if st.session_state["lab_final_interpretation_locked"]:
-        opt_df = variable_optimum()
-        manual_locked = st.session_state["lab_manual_schedule"]
-        cap = st.session_state["lab_capacity_shock"]
-        dem = st.session_state["lab_demand_shock"]
-        seg = st.session_state["lab_segment_result"]
-        predictions = {
-            "stage1_high_days": st.session_state["lab_stage1_prediction"],
-            "stage3_direction": st.session_state["lab_stage3_direction"],
-            "stage3_predicted_price": st.session_state["lab_stage3_predicted_price"],
-            "stage4_direction": st.session_state["lab_stage4_direction"],
-            "stage4_predicted_price": st.session_state["lab_stage4_predicted_price"],
-            "stage5_sensitive_segment": st.session_state["lab_stage5_sensitive_segment"],
-            "stage5_price_relationship": st.session_state["lab_stage5_price_relationship"],
-        }
-        score_breakdown, total_score = calculate_lab_score(
-            manual_locked, opt_df, cap, dem, seg, predictions,
-            st.session_state["lab_final_interpretation"],
+        generated_at = datetime.fromisoformat(st.session_state["lab_pdf_timestamp"])
+        generated_eastern = generated_at.astimezone(EASTERN_TZ)
+        st.success(
+            f"Verified report generated at {generated_eastern.strftime('%Y-%m-%d %H:%M:%S.%f %Z')}. "
+            f"Verification code: {st.session_state['lab_verification_code']}"
         )
 
-        st.subheader("Grading Summary")
-        score_df = pd.DataFrame(
-            [[component, points] for component, points in score_breakdown.items()]
-            + [["TOTAL", total_score]],
-            columns=["Graded Component", "Points"],
+        filename_name = student_name.strip().replace(" ", "_") if student_name.strip() else "student"
+        st.download_button(
+            "Download Verified Pricing Lab PDF",
+            data=st.session_state["lab_pdf_bytes"],
+            file_name=f"{filename_name}_pricing_lab_verified.pdf",
+            mime="application/pdf",
+            type="primary",
         )
-        render_styled_table(score_df, formats={"Points": "{:.2f}"}, first_col_left=True)
-        st.metric("Pricing Lab Score", f"{total_score:.2f} / 10.00")
+
         st.caption(
-            "Numerical pricing solutions receive broad-band credit based on revenue relative to the "
-            "optimization benchmark: at least 98% = full credit; 95-97.99% = 90%; "
-            "90-94.99% = 75%; 80-89.99% = 50%; below 80% = 25%."
+            "The timestamp is fixed when the report is generated; downloading the same report again does not change it. "
+            "To create a new timestamp/code, reset the lab and complete a new run."
         )
-
-        summary_rows = [
-            ["Student", student_name or "Not entered", ""],
-            ["Student ID", student_id or "Not entered", ""],
-            ["Section", course_section or "", ""],
-            ["Your baseline weekly revenue", manual_locked["Revenue"].sum(), "USD"],
-            ["Optimized baseline weekly revenue", opt_df["Revenue"].sum(), "USD"],
-            ["Saturday capacity-shock room rate", cap["student_price"], "USD"],
-            ["Saturday capacity-shock revenue", cap["revenue"], "USD"],
-            ["Tuesday demand-shock room rate", dem["student_price"], "USD"],
-            ["Tuesday demand-shock revenue", dem["revenue"], "USD"],
-            ["One-price segmented scenario revenue", seg["common_revenue"], "USD"],
-            ["Your segmented-pricing revenue", seg["segmented_revenue"], "USD"],
-        ]
-        summary_df = pd.DataFrame(summary_rows, columns=["Metric", "Value", "Unit"])
-        render_styled_table(summary_df, first_col_left=True)
-
-        st.info(
-            "Submit the verified PDF and the Excel workbook containing the analysis used to support "
-            "your pricing decisions. The PDF records the exact server generation time in U.S. Eastern "
-            "Time and UTC and creates a verification code from the Student ID and exact timestamp."
-        )
-
-        identity_ready = bool(student_name.strip()) and bool(student_id.strip())
-        if not identity_ready:
-            st.warning("Enter both your name and Student ID in the sidebar before generating the final report.")
-
-        if st.session_state["lab_pdf_bytes"] is None:
-            if st.button("Generate Verified PDF Report", type="primary", disabled=not identity_ready):
-                generated_at = datetime.now(ZoneInfo("UTC"))
-                verification_code = make_verification_code(student_id, generated_at)
-                pdf_bytes = build_pdf_report(
-                    student_name=student_name.strip(),
-                    student_id=student_id.strip(),
-                    course_section=course_section.strip(),
-                    generated_at=generated_at,
-                    verification_code=verification_code,
-                    manual_locked=manual_locked,
-                    opt_df=opt_df,
-                    cap=cap,
-                    dem=dem,
-                    seg=seg,
-                    predictions=predictions,
-                    score_breakdown=score_breakdown,
-                    total_score=total_score,
-                    final_interpretation=st.session_state["lab_final_interpretation"],
-                )
-                st.session_state["lab_pdf_bytes"] = pdf_bytes
-                st.session_state["lab_pdf_timestamp"] = generated_at.isoformat(timespec="microseconds")
-                st.session_state["lab_verification_code"] = verification_code
-                st.rerun()
-        else:
-            generated_at = datetime.fromisoformat(st.session_state["lab_pdf_timestamp"])
-            generated_eastern = generated_at.astimezone(EASTERN_TZ)
-            st.success(
-                f"Verified report generated at {generated_eastern.strftime('%Y-%m-%d %H:%M:%S.%f %Z')}. "
-                f"Verification code: {st.session_state['lab_verification_code']}"
-            )
-
-            filename_name = student_name.strip().replace(" ", "_") if student_name.strip() else "student"
-            st.download_button(
-                "Download Verified Pricing Lab PDF",
-                data=st.session_state["lab_pdf_bytes"],
-                file_name=f"{filename_name}_pricing_lab_verified.pdf",
-                mime="application/pdf",
-                type="primary",
-            )
-
-            st.caption(
-                "The timestamp is fixed when the report is generated; downloading the same report again does not change it. "
-                "To create a new timestamp/code, reset the lab and complete a new run."
-            )
 
 st.divider()
 st.caption(
